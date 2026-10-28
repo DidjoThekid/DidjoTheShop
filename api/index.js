@@ -9,7 +9,7 @@ const ok=(pw,h)=>{const a=Buffer.from(hash(pw,h.split(':')[0])),b=Buffer.from(h)
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const mail=(to,subject,html)=>fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:'Bearer '+E.RESEND_API_KEY,'Content-Type':'application/json'},body:JSON.stringify({from:E.MAIL_FROM,reply_to:E.MAIL_REPLY_TO,to,subject,html})}).then(async r=>{if(!r.ok)console.error('Resend',r.status,await r.text());return r.ok}).catch(e=>{console.error('Resend',e);return false});
 const uid=()=>crypto.randomBytes(6).toString('hex');
-const sm=(m,p,body)=>fetch('https://api.sumup.com/v0.1'+p,{method:m,headers:{Authorization:'Bearer '+E.SUMUP_API_KEY,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}).then(async r=>{const j=await r.json().catch(()=>({}));if(!r.ok){console.error('SumUp',r.status,JSON.stringify(j));throw new Error(j.message||j.error_message||('SumUp '+r.status))}return j});
+const sm=(m,p,body)=>fetch('https://api.sumup.com/v0.1'+p,{method:m,headers:{Authorization:'Bearer '+E.SUMUP_API_KEY,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}).then(async r=>{const j=await r.json().catch(()=>({}));if(!r.ok){console.error('SumUp',r.status,JSON.stringify(j));throw new Error('SumUp '+r.status+' '+JSON.stringify(j))}return j});
 export default async function h(req,res){try{return await main(req,res)}catch(e){console.error(e);return res.status(500).json({error:'Erreur serveur : '+e.message})}}
 async function main(req,res){
   const path=new URL(req.url,'http://x').pathname.replace(/^\/api\//,'').replace(/\/$/,'');
