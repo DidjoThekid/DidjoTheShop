@@ -73,9 +73,9 @@ async function main(req,res){
   if(path==='cards'){
     try{const l=await sm('GET','/customers/'+encodeURIComponent(user.id)+'/payment-instruments');return send(200,(Array.isArray(l)?l:[]).filter(c=>c.active!==false).map(c=>({last4:c.card?.last_4_digits,brand:c.card?.type})))}catch{return send(200,[])}
   }
-  if(path==='card/setup'){
-    if(!user.sup){try{await sm('POST','/customers',{customer_id:user.id,personal_details:{email:user.email,first_name:user.name}})}catch{}user.sup=true;await wr('users',users)}
-    const c=await sm('POST','/checkouts',{checkout_reference:'card-'+uid(),amount:1,currency:'EUR',merchant_code:E.SUMUP_MERCHANT_CODE,description:'Verification de la carte DidjoTheSHOP',customer_id:user.id,purpose:'SETUP_RECURRING_PAYMENT'});
+    if(path==='card/setup'){
+    if(!user.sup){try{await sm('POST','/customers',...
+    const c=await sm('POST','/checkouts',...
     return send(200,{checkoutId:c.id});
   }
   if(path==='pay'||path==='pay/confirm'){
