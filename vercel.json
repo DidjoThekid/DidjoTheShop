@@ -1,1 +1,1 @@
-{"rewrites":[{"source":"/api/:p*","destination":"/api/index.js"},{"source":"/admin","destination":"/admin.html"}]}
+{"rewrites":[{"source":"/api/:p*","destination":"/api/index.js"},{"source":"/admin","destination":"/admin.html"},{"source":"/login","destination":"/login.html"},{"source":"/signup","destination":"/signup.html"}]}
