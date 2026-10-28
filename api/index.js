@@ -20,21 +20,43 @@ async function main(req,res){
   const admin=!!user&&user.email===(E.ADMIN_EMAIL||'').toLowerCase();
   const start=u=>{const p=Buffer.from(JSON.stringify({id:u.id,exp:Date.now()+2592e6})).toString('base64url');login(p+'.'+sign(p))};
   const pub=u=>({name:u.name,email:u.email,admin:u.email===(E.ADMIN_EMAIL||'').toLowerCase()});
+  const issue=async u=>{
+    if(u.code&&u.code.sent>Date.now()-3e4)return send(429,{error:'Attends 30 secondes avant de redemander un code'});
+    const c=String(crypto.randomInt(0,1e6)).padStart(6,'0');
+    u.code={h:sign('c'+u.id+c),exp:Date.now()+6e5,tries:0,sent:Date.now()};await wr('users',users);
+    const sent=await mail(u.email,'Ton code de connexion DidjoTheSHOP',`<p>Ton code : <b style="font-size:20px;letter-spacing:3px">${c}</b></p><p>Il est valable 10 minutes. Si ce n'est pas toi, ignore ce mail.</p>`);
+    return sent?send(200,{step:'code',email:u.email}):send(502,{error:"Impossible d'envoyer le code, réessaie plus tard"});
+  };
   if(path.startsWith('admin/')&&!admin)return send(403,{error:'Accès refusé'});
   if(path==='products')return send(200,{products:await rd('products',[]),shipping:(await rd('settings',{shipping:0})).shipping});
   if(path==='me')return send(200,user?pub(user):null);
   if(path==='logout'){login('');return send(200,{})}
   if(path==='register'){
     const email=String(b.email||'').trim().toLowerCase(),name=String(b.name||'').trim().slice(0,60);
+    if(email===(E.ADMIN_EMAIL||'').toLowerCase())return send(403,{error:'Cette adresse est réservée'});
     if(!name||!/^\S+@\S+\.\S+$/.test(email)||String(b.password||'').length<8)return send(400,{error:'Nom, email valide et mot de passe de 8 caractères minimum requis'});
     if(users.some(u=>u.email===email))return send(409,{error:'Un compte existe déjà avec cet email'});
-    const u={id:uid(),name,email,hash:hash(b.password),banned:false,created:Date.now()};users.push(u);await wr('users',users);start(u);return send(200,pub(u));
+    const u={id:uid(),name,email,hash:hash(b.password),banned:false,created:Date.now()};users.push(u);return issue(u);
   }
   if(path==='login'){
-    const u=users.find(x=>x.email===String(b.email||'').trim().toLowerCase());
-    if(!u||!ok(String(b.password||''),u.hash))return send(401,{error:'Email ou mot de passe incorrect'});
+    const em=String(b.email||'').trim().toLowerCase(),isAdm=em===(E.ADMIN_EMAIL||'').toLowerCase();
+    if(isAdm&&!E.ADMIN_PASSWORD)return send(500,{error:'ADMIN_PASSWORD manquant dans les variables Vercel'});
+    let u=users.find(x=>x.email===em);
+    if(isAdm&&!u){u={id:uid(),name:'Admin',email:em,hash:'',banned:false,created:Date.now()};users.push(u)}
+    if(!u)return send(401,{error:'Email ou mot de passe incorrect'});
+    if(u.lock>Date.now())return send(429,{error:'Trop de tentatives : réessaie dans quelques minutes'});
+    const pw=Buffer.from(String(b.password||'')),ap=Buffer.from(E.ADMIN_PASSWORD||'');
+    const good=isAdm?pw.length===ap.length&&crypto.timingSafeEqual(pw,ap):ok(String(b.password||''),u.hash);
+    if(!good){u.fails=(u.fails||0)+1;if(u.fails>=5){u.lock=Date.now()+9e5;u.fails=0}await wr('users',users);return send(401,{error:'Email ou mot de passe incorrect'})}
     if(u.banned)return send(403,{error:'Ce compte est suspendu'});
-    start(u);return send(200,pub(u));
+    u.fails=0;return issue(u);
+  }
+  if(path==='verify'){
+    const u=users.find(x=>x.email===String(b.email||'').trim().toLowerCase());
+    if(!u||u.banned||!u.code||u.code.exp<Date.now())return send(400,{error:'Code expiré : reconnecte-toi pour en recevoir un nouveau'});
+    const g=sign('c'+u.id+String(b.code||'').trim());
+    if(!crypto.timingSafeEqual(Buffer.from(g),Buffer.from(u.code.h))){u.code.tries++;if(u.code.tries>=5)delete u.code;await wr('users',users);return send(400,{error:'Code incorrect'})}
+    delete u.code;u.verified=true;await wr('users',users);start(u);return send(200,pub(u));
   }
   if(!user)return send(401,{error:'Connecte-toi pour continuer'});
   if(path==='orders')return send(200,(await rd('orders',[])).filter(o=>o.userId===user.id).reverse());
