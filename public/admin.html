@@ -4,7 +4,7 @@
 const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])),eur=c=>(c/100).toFixed(2).replace('.',',')+' €';
 const api=async(p,b)=>{const r=await fetch('/api/'+p,b?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}:{});const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||'Erreur');return j};
 const ST=['En préparation','Expédié','En cours de livraison','Livré'];let D,tab='orders',img='';
-async function load(){try{D=await api('admin/data')}catch(e){return $('#v').innerHTML='<h1>Accès refusé</h1><p>Connecte-toi avec le compte administrateur sur <a href="/#compte">la boutique</a>.</p>'}draw()}
+async function load(){try{D=await api('admin/data')}catch(e){return $('#v').innerHTML='<h1>Accès refusé</h1><p>Connecte-toi avec le compte administrateur sur <a href="/login?next=/admin">la page de connexion</a>.</p>'}draw()}
 const T=(k,l)=>`<button class="${tab==k?'on':'alt'}" onclick="tab='${k}';draw()">${l}</button>`;
 function draw(){$('#v').innerHTML=`<div class="tabs">${T('orders','Commandes')}${T('products','Articles')}${T('users','Clients')}${T('mail','Mail')}${T('set','Livraison')}</div><p id="m"></p>`+({
 orders:()=>`<table>${D.orders.map(o=>`<tr><td><b>${o.id}</b><br><span class="mut">${esc(o.email)}</span><br>${eur(o.total)}</td><td class="mut">${o.items.map(i=>esc(i.name)+' ×'+i.qty).join('<br>')}<br>${esc(o.address)}</td><td><select id="s${o.id}">${ST.map(s=>`<option ${s==o.status?'selected':''}>${s}</option>`).join('')}</select><input id="t${o.id}" placeholder="Code de suivi" value="${esc(o.tracking)}"><button onclick="ord('${o.id}')">Enregistrer</button></td></tr>`).join('')||'<tr><td>Aucune commande.</td></tr>'}</table>`,
