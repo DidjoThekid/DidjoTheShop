@@ -60,7 +60,7 @@ async function main(req,res){
     delete u.code;u.verified=true;await wr('users',users);start(u);return send(200,pub(u));
   }
   if(!user)return send(401,{error:'Connecte-toi pour continuer'});
-  if(path==='orders')return send(200,(await rd('orders',[])).filter(o=>o.userId===user.id).reverse());
+  if(path==='orders')return send(200,(await rd('orders',[])).filter(o=>o.userId===user.id&&!o.archived).reverse());
   if(path==='order'){
     const prods=await rd('products',[]),{shipping}=await rd('settings',{shipping:0});
     const items=(b.items||[]).map(i=>{const p=prods.find(x=>x.id===i.id);return p&&{id:p.id,name:p.name,price:p.price,sub:!!p.sub,qty:Math.min(99,Math.max(1,i.qty|0))}}).filter(Boolean);
@@ -104,7 +104,7 @@ async function main(req,res){
     if(!r.ok)return send(502,{error:'Resend a refusé l\'envoi : vérifie la clé API et le domaine'});
     return send(200,{sent:to.length});
   }
-  if(path==='admin/data')return send(200,{products:await rd('products',[]),orders:(await rd('orders',[])).reverse(),users:users.map(u=>({id:u.id,name:u.name,email:u.email,banned:u.banned})),shipping:(await rd('settings',{shipping:0})).shipping});
+  if(path==='admin/data')return send(200,{products:await rd('products',[]),orders:(await rd('orders',[])).reverse().map(o=>({...o,name:users.find(u=>u.id===o.userId)?.name||''})),users:users.map(u=>({id:u.id,name:u.name,email:u.email,banned:u.banned})),shipping:(await rd('settings',{shipping:0})).shipping});
   if(path==='admin/product'){
     let ps=await rd('products',[]);
     if(b.del)ps=ps.filter(p=>p.id!==b.id);
@@ -118,9 +118,10 @@ async function main(req,res){
   if(path==='admin/ban'){const u=users.find(x=>x.id===b.id);if(u&&u.email!==user.email){u.banned=!!b.banned;await wr('users',users)}return send(200,{})}
   if(path==='admin/order'){
     const orders=await rd('orders',[]),o=orders.find(x=>x.id===b.id);if(!o)return send(404,{error:'Commande introuvable'});
-    const changed=o.status!==b.status||o.tracking!==b.tracking;o.status=b.status;o.tracking=String(b.tracking||'').slice(0,80);await wr('orders',orders);
+    const changed=o.status!==b.status||o.tracking!==b.tracking;o.status=b.status;o.tracking=String(b.tracking||'').slice(0,80);o.archived=o.status==='Livré';await wr('orders',orders);
     if(changed&&['Expédié','En cours de livraison','Livré'].includes(o.status))await mail(o.email,`Commande ${o.id} : ${o.status}`,`<p>Ta commande <b>${o.id}</b> est maintenant : <b>${esc(o.status)}</b>.</p>${o.tracking?`<p>Code de suivi : <b>${esc(o.tracking)}</b></p>`:''}`);
     return send(200,{});
   }
+  if(path==='admin/order-delete'){const orders=await rd('orders',[]),o=orders.find(x=>x.id===b.id);if(!o||!o.archived)return send(400,{error:'Seules les commandes livrées (archivées) peuvent être supprimées'});await wr('orders',orders.filter(x=>x.id!==b.id));return send(200,{})}
   send(404,{error:'Introuvable'});
 }
