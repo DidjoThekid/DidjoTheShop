@@ -1,0 +1,16 @@
+:root{--bg:#f4f6f8;--ink:#142033;--mut:#5d6b7e;--line:#dfe4ea;--ac:#2456f5;--card:#fff}
+@media(prefers-color-scheme:dark){:root{--bg:#10151d;--ink:#eef1f5;--mut:#9aa7b8;--line:#263040;--card:#171e29;--ac:#6d8cff}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 Manrope,system-ui,sans-serif}
+header{display:flex;align-items:center;gap:20px;padding:16px max(20px,calc(50% - 560px));background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+header b{font-size:1.25rem;letter-spacing:-.02em;margin-right:auto}header a{color:var(--ink);text-decoration:none;font-weight:600}
+main{max-width:1120px;margin:0 auto;padding:32px 20px 80px}h1{font-size:2rem;letter-spacing:-.03em;margin:0 0 6px}h2{margin:28px 0 10px}p{max-width:62ch}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:20px;margin-top:24px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}
+.grid .card{padding:0;overflow:hidden;display:flex;flex-direction:column}.grid img,.ph{width:100%;aspect-ratio:4/3;object-fit:cover;background:var(--line)}
+.grid .in{padding:14px 16px 16px;display:flex;flex-direction:column;gap:6px;flex:1}.mut{color:var(--mut);font-size:.9rem}.price{font-weight:800}
+button,.btn{font:inherit;font-weight:700;border:0;border-radius:10px;padding:10px 16px;background:var(--ac);color:#fff;cursor:pointer}button.alt{background:transparent;color:var(--ink);border:1px solid var(--line)}button.red{background:#c92a2a}
+input,select,textarea{font:inherit;width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink)}
+label{display:block;font-weight:600;margin:12px 0 4px}.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.row>*{flex:0 0 auto}.form{max-width:420px}
+:focus-visible{outline:3px solid var(--ac);outline-offset:2px}.err{color:#c92a2a;font-weight:600}.ok{color:#1b8a4b;font-weight:600}
+.steps{display:flex;gap:6px;margin:8px 0}.steps i{flex:1;height:6px;border-radius:3px;background:var(--line)}.steps i.on{background:var(--ac)}
+table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:8px;border-bottom:1px solid var(--line);vertical-align:top}.tabs{display:flex;gap:8px;margin:16px 0}.tabs button.on{background:var(--ac);color:#fff}
