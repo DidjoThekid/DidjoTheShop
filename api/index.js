@@ -9,6 +9,7 @@ const ok=(pw,h)=>{const a=Buffer.from(hash(pw,h.split(':')[0])),b=Buffer.from(h)
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const mail=(to,subject,html)=>fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:'Bearer '+E.RESEND_API_KEY,'Content-Type':'application/json'},body:JSON.stringify({from:E.MAIL_FROM,reply_to:E.MAIL_REPLY_TO,to,subject,html})}).then(async r=>{if(!r.ok)console.error('Resend',r.status,await r.text());return r.ok}).catch(e=>{console.error('Resend',e);return false});
 const uid=()=>crypto.randomBytes(6).toString('hex');
+const sm=(m,p,body)=>fetch('https://api.sumup.com/v0.1'+p,{method:m,headers:{Authorization:'Bearer '+E.SUMUP_API_KEY,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}).then(async r=>{const j=await r.json().catch(()=>({}));if(!r.ok){console.error('SumUp',r.status,JSON.stringify(j));throw new Error(j.message||j.error_message||('SumUp '+r.status))}return j});
 export default async function h(req,res){try{return await main(req,res)}catch(e){console.error(e);return res.status(500).json({error:'Erreur serveur : '+e.message})}}
 async function main(req,res){
   const path=new URL(req.url,'http://x').pathname.replace(/^\/api\//,'').replace(/\/$/,'');
@@ -68,6 +69,26 @@ async function main(req,res){
     const orders=await rd('orders',[]);orders.push(o);await wr('orders',orders);
     await mail(user.email,`Commande ${o.id} enregistrée`,`<p>Bonjour ${esc(user.name)}, ta commande <b>${o.id}</b> est enregistrée (${(o.total/100).toFixed(2)} €).</p>`);
     return send(200,o);
+  }
+  if(path==='cards'){
+    try{const l=await sm('GET','/customers/'+encodeURIComponent(user.id)+'/payment-instruments');return send(200,(Array.isArray(l)?l:[]).filter(c=>c.active!==false).map(c=>({last4:c.card?.last_4_digits,brand:c.card?.type})))}catch{return send(200,[])}
+  }
+  if(path==='card/setup'){
+    if(!user.sup){try{await sm('POST','/customers',{customer_id:user.id,personal_details:{email:user.email,first_name:user.name}})}catch{}user.sup=true;await wr('users',users)}
+    const c=await sm('POST','/checkouts',{checkout_reference:'card-'+uid(),amount:1,currency:'EUR',merchant_code:E.SUMUP_MERCHANT_CODE,description:'Verification de la carte DidjoTheSHOP',customer_id:user.id,purpose:'SETUP_RECURRING_PAYMENT'});
+    return send(200,{checkoutId:c.id});
+  }
+  if(path==='pay'||path==='pay/confirm'){
+    const orders=await rd('orders',[]),o=orders.find(x=>x.id===b.orderId&&x.userId===user.id);
+    if(!o)return send(404,{error:'Commande introuvable'});
+    if(o.paid)return send(200,{paid:true});
+    if(path==='pay'){
+      const c=await sm('POST','/checkouts',{checkout_reference:o.id+'-'+uid(),amount:o.total/100,currency:'EUR',merchant_code:E.SUMUP_MERCHANT_CODE,description:'Commande '+o.id});
+      o.checkoutId=c.id;await wr('orders',orders);return send(200,{checkoutId:c.id});
+    }
+    const c=o.checkoutId?await sm('GET','/checkouts/'+o.checkoutId):{};
+    if(c.status==='PAID'&&Math.round(c.amount*100)===o.total){o.paid=true;await wr('orders',orders);await mail(user.email,`Paiement reçu pour la commande ${o.id}`,`<p>Merci ! Le paiement de <b>${(o.total/100).toFixed(2)} €</b> pour la commande <b>${o.id}</b> est bien reçu.</p>`);return send(200,{paid:true})}
+    return send(200,{paid:false});
   }
   if(path==='admin/mail'){
     const subject=String(b.subject||'').trim().slice(0,150),text=String(b.message||'').trim().slice(0,5000);
