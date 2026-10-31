@@ -78,7 +78,7 @@ async function main(req,res){
       try{await sm('POST','/customers',{customer_id:user.id,personal_details:{email:user.email,first_name:user.name}})}catch(e){if(!/409|exist|duplicate|conflict/i.test(e.message))throw e}
       user.cust=true;await wr('users',users);
     }
-    const c=await sm('POST','/checkouts',{checkout_reference:'card-'+uid(),amount:1,currency:'EUR',merchant_code:E.SUMUP_MERCHANT_CODE,description:'Verification de la carte DidjoTheSHOP',redirect_url:origin+'/#compte',customer_id:user.id,purpose:'SETUP_RECURRING_PAYMENT'});
+    const c=await sm('POST','/checkouts',{checkout_reference:'card-'+uid(),amount:0.01,currency:'EUR',merchant_code:E.SUMUP_MERCHANT_CODE,description:'Verification de la carte DidjoTheSHOP',redirect_url:origin+'/#compte',customer_id:user.id,purpose:'SETUP_RECURRING_PAYMENT'});
     return send(200,{checkoutId:c.id});
   }
   if(path==='pay'||path==='pay/confirm'){
