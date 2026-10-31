@@ -71,7 +71,7 @@ async function main(req,res){
     return send(200,o);
   }
   if(path==='cards'){
-    try{const l=await sm('GET','/customers/'+encodeURIComponent(user.id)+'/payment-instruments');return send(200,(Array.isArray(l)?l:[]).filter(c=>c.active!==false).map(c=>({last4:c.card?.last_4_digits,brand:c.card?.type})))}catch{return send(200,[])}
+    try{const l=await sm('GET','/customers/'+encodeURIComponent(user.id)+'/payment-instruments');console.log('instruments',JSON.stringify(l));return send(200,(Array.isArray(l)?l:[]).filter(c=>c.active!==false).map(c=>({last4:c.card?.last_4_digits,brand:c.card?.type})))}catch(e){console.error('cards',e.message);return send(200,[])}
   }
   if(path==='card/setup'){
     if(!user.cust){
