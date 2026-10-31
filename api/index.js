@@ -13,7 +13,7 @@ const sm=(m,p,body)=>fetch('https://api.sumup.com/v0.1'+p,{method:m,headers:{Aut
 export default async function h(req,res){try{return await main(req,res)}catch(e){console.error(e);return res.status(500).json({error:'Erreur serveur : '+e.message})}}
 async function main(req,res){
   const path=new URL(req.url,'http://x').pathname.replace(/^\/api\//,'').replace(/\/$/,'');
-  const b=req.body||{},send=(c,o)=>res.status(c).json(o);
+  const b=req.body||{},send=(c,o)=>res.status(c).json(o);const origin='https://'+(req.headers['x-forwarded-host']||req.headers.host);
   const login=u=>res.setHeader('Set-Cookie',`s=${u};HttpOnly;Secure;SameSite=Lax;Path=/;Max-Age=2592000`);
   const users=await rd('users',[]);
   let user=null;const ck=(req.headers.cookie||'').match(/s=([^;]+)/)?.[1];
@@ -78,7 +78,7 @@ async function main(req,res){
       try{await sm('POST','/customers',{customer_id:user.id,personal_details:{email:user.email,first_name:user.name}})}catch(e){if(!/409|exist|duplicate|conflict/i.test(e.message))throw e}
       user.cust=true;await wr('users',users);
     }
-    const c=await sm('POST','/checkouts',{checkout_reference:'card-'+uid(),amount:1,currency:'EUR',merchant_code:E.SUMUP_MERCHANT_CODE,description:'Verification de la carte DidjoTheSHOP',customer_id:user.id,purpose:'SETUP_RECURRING_PAYMENT'});
+    const c=await sm('POST','/checkouts',{checkout_reference:'card-'+uid(),amount:1,currency:'EUR',merchant_code:E.SUMUP_MERCHANT_CODE,description:'Verification de la carte DidjoTheSHOP',redirect_url:origin+'/#compte',customer_id:user.id,purpose:'SETUP_RECURRING_PAYMENT'});
     return send(200,{checkoutId:c.id});
   }
   if(path==='pay'||path==='pay/confirm'){
@@ -86,7 +86,7 @@ async function main(req,res){
     if(!o)return send(404,{error:'Commande introuvable'});
     if(o.paid)return send(200,{paid:true});
     if(path==='pay'){
-      const c=await sm('POST','/checkouts',{checkout_reference:o.id+'-'+uid(),amount:o.total/100,currency:'EUR',merchant_code:E.SUMUP_MERCHANT_CODE,description:'Commande '+o.id});
+      const c=await sm('POST','/checkouts',{checkout_reference:o.id+'-'+uid(),amount:o.total/100,currency:'EUR',merchant_code:E.SUMUP_MERCHANT_CODE,description:'Commande '+o.id,redirect_url:origin+'/#compte'});
       o.checkoutId=c.id;await wr('orders',orders);return send(200,{checkoutId:c.id});
     }
     const c=o.checkoutId?await sm('GET','/checkouts/'+o.checkoutId):{};
