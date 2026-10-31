@@ -7,9 +7,9 @@ const sign=s=>crypto.createHmac('sha256',E.SESSION_SECRET).update(s).digest('bas
 const hash=(pw,salt=crypto.randomBytes(16).toString('hex'))=>salt+':'+crypto.scryptSync(pw,salt,32).toString('hex');
 const ok=(pw,h)=>{const a=Buffer.from(hash(pw,h.split(':')[0])),b=Buffer.from(h);return a.length===b.length&&crypto.timingSafeEqual(a,b)};
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const mail=(to,subject,html)=>fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:'Bearer '+E.RESEND_API_KEY,'Content-Type':'application/json'},body:JSON.stringify({from:E.RESEND_FROM||'noreply@didjotheshop.fr',to:[to],subject,html})}).then(r=>r.ok).catch(()=>false);
+const mail=(to,subject,html)=>fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:'Bearer '+E.RESEND_API_KEY,'Content-Type':'application/json'},body:JSON.stringify({from:E.MAIL_FROM,reply_to:E.MAIL_REPLY_TO,to,subject,html})}).then(async r=>{if(!r.ok)console.error('Resend',r.status,await r.text());return r.ok}).catch(e=>{console.error('Resend',e);return false});
 const uid=()=>crypto.randomBytes(6).toString('hex');
-const sm=(m,p,body)=>fetch('https://api.sumup.com/v0.1'+p,{method:m,headers:{Authorization:'Bearer '+E.SUMUP_API_KEY,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}).then(async r=>{const t=await r.text();const j=t?JSON.parse(t):{};if(!r.ok)throw new Error((j.error||j.message||t||'SumUp error'));return j;}).catch(e=>{throw e});
+const sm=(m,p,body)=>fetch('https://api.sumup.com/v0.1'+p,{method:m,headers:{Authorization:'Bearer '+E.SUMUP_API_KEY,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}).then(async r=>{const j=await r.json().catch(()=>({}));if(!r.ok){console.error('SumUp',r.status,JSON.stringify(j));throw new Error('SumUp '+r.status+' '+JSON.stringify(j))}return j});
 export default async function h(req,res){try{return await main(req,res)}catch(e){console.error(e);return res.status(500).json({error:'Erreur serveur : '+e.message})}}
 async function main(req,res){
   const path=new URL(req.url,'http://x').pathname.replace(/^\/api\//,'').replace(/\/$/,'');
@@ -35,7 +35,7 @@ async function main(req,res){
   if(path==='register'){
     const email=String(b.email||'').trim().toLowerCase(),name=String(b.name||'').trim().slice(0,60);
     if(email===(E.ADMIN_EMAIL||'').toLowerCase())return send(403,{error:'Cette adresse est réservée'});
-    if(!name||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)||String(b.password||'').length<8)return send(400,{error:'Nom, email valide et mot de passe de 8 caractères minimum requis'});
+    if(!name||!/^\S+@\S+\.\S+$/.test(email)||String(b.password||'').length<8)return send(400,{error:'Nom, email valide et mot de passe de 8 caractères minimum requis'});
     if(users.some(u=>u.email===email))return send(409,{error:'Un compte existe déjà avec cet email'});
     const u={id:uid(),name,email,hash:hash(b.password),banned:false,created:Date.now()};users.push(u);return issue(u);
   }
@@ -71,14 +71,14 @@ async function main(req,res){
     return send(200,o);
   }
   if(path==='cards'){
-    try{const l=await sm('GET','/customers/'+encodeURIComponent(user.id)+'/payment-instruments');return send(200,(Array.isArray(l)?l:[]).filter(c=>c.active!==false).map(c=>({last4:c.card?.last_4_d??c.card?.last_4||'',brand:c.card?.brand||'Carte'})))}catch{return send(200,[])}
+    try{const l=await sm('GET','/customers/'+encodeURIComponent(user.id)+'/payment-instruments');return send(200,(Array.isArray(l)?l:[]).filter(c=>c.active!==false).map(c=>({last4:c.card?.last_4_digits,brand:c.card?.type})))}catch{return send(200,[])}
   }
   if(path==='card/setup'){
     if(!user.cust){
       try{await sm('POST','/customers',{customer_id:user.id,personal_details:{email:user.email,first_name:user.name}})}catch(e){if(!/409|exist|duplicate|conflict/i.test(e.message))throw e}
       user.cust=true;await wr('users',users);
     }
-    const c=await sm('POST','/checkouts',{checkout_reference:'card-'+uid(),amount:1,currency:'EUR',merchant_code:E.SUMUP_MERCHANT_CODE,description:'Vérification de la carte DidjoTheSHOP',redirect_url:origin+'/compte',customer_id:user.id,purpose:'SETUP'});
+    const c=await sm('POST','/checkouts',{checkout_reference:'card-'+uid(),amount:1,currency:'EUR',merchant_code:E.SUMUP_MERCHANT_CODE,description:'Verification de la carte DidjoTheSHOP',redirect_url:origin+'/#compte',customer_id:user.id,purpose:'SETUP_RECURRING_PAYMENT'});
     return send(200,{checkoutId:c.id});
   }
   if(path==='pay'||path==='pay/confirm'){
@@ -86,34 +86,34 @@ async function main(req,res){
     if(!o)return send(404,{error:'Commande introuvable'});
     if(o.paid)return send(200,{paid:true});
     if(path==='pay'){
-      const c=await sm('POST','/checkouts',{checkout_reference:o.id+'-'+uid(),amount:o.total/100,currency:'EUR',merchant_code:E.SUMUP_MERCHANT_CODE,description:'Commande '+o.id,redirect_url:origin+'/compte'});
+      const c=await sm('POST','/checkouts',{checkout_reference:o.id+'-'+uid(),amount:o.total/100,currency:'EUR',merchant_code:E.SUMUP_MERCHANT_CODE,description:'Commande '+o.id,redirect_url:origin+'/#compte'});
       o.checkoutId=c.id;await wr('orders',orders);return send(200,{checkoutId:c.id});
     }
     const c=o.checkoutId?await sm('GET','/checkouts/'+o.checkoutId):{};
-    if(c.status==='PAID'&&Math.round(c.amount*100)===o.total){o.paid=true;await wr('orders',orders);await mail(user.email,`Paiement reçu pour la commande ${o.id}`,`<p>Merci ! Le paiement de <b>${(o.total/100).toFixed(2)} €</b> a été reçu.</p>`)}
+    if(c.status==='PAID'&&Math.round(c.amount*100)===o.total){o.paid=true;await wr('orders',orders);await mail(user.email,`Paiement reçu pour la commande ${o.id}`,`<p>Merci ! Le paiement de <b>${(o.total/100).toFixed(2)} €</b> pour la commande <b>${o.id}</b> est bien reçu.</p>`);return send(200,{paid:true})}
     return send(200,{paid:false});
   }
   if(path==='admin/mail-html'){
     const T=['p','br','div','span','b','strong','i','em','u','s','strike','h1','h2','h3','ul','ol','li','a','blockquote','hr','font'];
-    const clean=h=>String(h||'').slice(0,30000).replace(/<(script|style|iframe|object|embed)[\s\S]*?<\/\1>/gi,'').replace(/<!--[\s\S]*?-->/g,'').replace(/<(\/?)(([a-z][a-z0-9]*)\b([^>]*)>)/gi,(m,sl,tag,tagName,attrs)=>T.includes(tagName.toLowerCase())?m:'');
+    const clean=h=>String(h||'').slice(0,30000).replace(/<(script|style|iframe|object|embed)[\s\S]*?<\/\1>/gi,'').replace(/<!--[\s\S]*?-->/g,'').replace(/<(\/?)([a-z][a-z0-9]*)\b([^>]*)>/gi,(m,sl,t,a)=>{t=t.toLowerCase();if(!T.includes(t))return '';if(sl)return '</'+t+'>';let o='';if(t==='a'){const x=/href\s*=\s*"(https?:\/\/[^"\s]*|mailto:[^"\s]*)"/i.exec(a);if(x)o=' href="'+x[1]+'"'}if(t==='font'){const c=/color\s*=\s*"(#[0-9a-f]{3,8})"/i.exec(a);if(c)o+=' color="'+c[1]+'"';const z=/size\s*=\s*"([1-7])"/i.exec(a);if(z)o+=' size="'+z[1]+'"'}const al=/(?:text-align:\s*|align\s*=\s*"?)(left|center|right|justify)/i.exec(a);if(al)o+=' style="text-align:'+al[1].toLowerCase()+'"';return '<'+t+o+(t==='br'||t==='hr'?'/':'')+'>'});
     const subject=String(b.subject||'').trim().slice(0,150),body=clean(b.html);
     if(!subject||!body.replace(/<[^>]*>/g,'').trim())return send(400,{error:'Objet et message requis'});
     const one=String(b.other||'').trim().toLowerCase()||(b.to==='all'?'':String(b.to||'').trim().toLowerCase());
     const to=one?[one]:users.filter(u=>!u.banned).map(u=>u.email).slice(0,100);
-    if(!to.length||to.some(e=>!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)))return send(400,{error:'Destinataire invalide'});
+    if(!to.length||to.some(e=>!/^\S+@\S+\.\S+$/.test(e)))return send(400,{error:'Destinataire invalide'});
     const html='<div style="font-family:Arial,sans-serif;font-size:16px;line-height:1.5;color:#142033">'+body+'</div>';
-    const r=await fetch('https://api.resend.com/emails/batch',{method:'POST',headers:{Authorization:'Bearer '+E.RESEND_API_KEY,'Content-Type':'application/json'},body:JSON.stringify(to.map(e=>({from:E.RESEND_FROM||'noreply@didjotheshop.fr',to:[e],subject,html})))}) ;
+    const r=await fetch('https://api.resend.com/emails/batch',{method:'POST',headers:{Authorization:'Bearer '+E.RESEND_API_KEY,'Content-Type':'application/json'},body:JSON.stringify(to.map(e=>({from:E.MAIL_FROM,reply_to:E.MAIL_REPLY_TO,to:[e],subject,html})))});
     if(!r.ok)return send(502,{error:"Resend a refusé l'envoi : vérifie la clé API et le domaine"});
     return send(200,{sent:to.length});
   }
-  if(path==='admin/data')return send(200,{products:await rd('products',[]),orders:(await rd('orders',[])).reverse().map(o=>({...o,name:users.find(u=>u.id===o.userId)?.name||''})),users:users.map(u=>({id:u.id,name:u.name,email:u.email,banned:!!u.banned,created:u.created,admin:u.email===(E.ADMIN_EMAIL||'').toLowerCase()}))});
+  if(path==='admin/data')return send(200,{products:await rd('products',[]),orders:(await rd('orders',[])).reverse().map(o=>({...o,name:users.find(u=>u.id===o.userId)?.name||''})),users:users.map(u=>({id:u.id,name:u.name,email:u.email,banned:u.banned})),shipping:(await rd('settings',{shipping:0})).shipping});
   if(path==='admin/product'){
     let ps=await rd('products',[]);
     if(b.del)ps=ps.filter(p=>p.id!==b.id);
     else{const p={id:b.id||uid(),name:String(b.name||'').slice(0,80),desc:String(b.desc||'').slice(0,400),price:Math.round(Number(b.price)*100)||0,image:String(b.image||''),sub:!!b.sub};
       if(!p.name||p.price<=0)return send(400,{error:'Nom et prix requis'});
       const i=ps.findIndex(x=>x.id===p.id);i<0?ps.push(p):ps[i]=p}
-    await wr('products',ps);return send(200,{})
+    await wr('products',ps);return send(200,{});
   }
   if(path==='admin/shipping'){await wr('settings',{shipping:Math.max(0,Math.round(Number(b.shipping)*100)||0)});return send(200,{})}
   if(path==='admin/upload'){const r=await put('img/'+uid()+'-'+String(b.name||'img').replace(/[^\w.-]/g,'_'),Buffer.from(b.data,'base64'),{access:'public',contentType:b.type||'image/jpeg'});return send(200,{url:r.url})}
@@ -121,9 +121,9 @@ async function main(req,res){
   if(path==='admin/order'){
     const orders=await rd('orders',[]),o=orders.find(x=>x.id===b.id);if(!o)return send(404,{error:'Commande introuvable'});
     const changed=o.status!==b.status||o.tracking!==b.tracking;o.status=b.status;o.tracking=String(b.tracking||'').slice(0,80);o.archived=o.status==='Livré';await wr('orders',orders);
-    if(changed&&['Expédié','En cours de livraison','Livré'].includes(o.status))await mail(o.email,`Commande ${o.id} : ${o.status}`,`<p>Ta commande <b>${o.id}</b> est maintenant : <b>${esc(o.status)}</b>.</p>${o.tracking?`<p>Suivi : <b>${esc(o.tracking)}</b></p>`:''}`);
-    return send(200,{})
+    if(changed&&['Expédié','En cours de livraison','Livré'].includes(o.status))await mail(o.email,`Commande ${o.id} : ${o.status}`,`<p>Ta commande <b>${o.id}</b> est maintenant : <b>${esc(o.status)}</b>.</p>${o.tracking?`<p>Code de suivi : <b>${esc(o.tracking)}</b></p>`:''}`);
+    return send(200,{});
   }
-  if(path==='admin/order-delete'){const orders=await rd('orders',[]),o=orders.find(x=>x.id===b.id);if(!o||!o.archived)return send(400,{error:'Seules les commandes livrées (archivées) peuvent être supprimées'});orders.splice(orders.indexOf(o),1);await wr('orders',orders);return send(200,{})}
+  if(path==='admin/order-delete'){const orders=await rd('orders',[]),o=orders.find(x=>x.id===b.id);if(!o||!o.archived)return send(400,{error:'Seules les commandes livrées (archivées) peuvent être supprimées'});await wr('orders',orders.filter(x=>x.id!==b.id));return send(200,{})}
   send(404,{error:'Introuvable'});
 }
