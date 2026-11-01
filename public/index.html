@@ -1,6 +1,7 @@
 <!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DidjoTheSHOP</title>
+<link rel="icon" href="/logo.png">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;800&display=swap" rel="stylesheet"><link rel="stylesheet" href="/style.css"></head><body>
-<header><b>DidjoTheSHOP</b><a href="#">Boutique</a><a href="#panier">Panier (<span id="n">0</span>)</a><a href="#compte">Compte</a></header><main id="v"></main>
+<header><b style="display:inline-flex;align-items:center;gap:10px"><img src="/logo.png" alt="" style="height:38px;width:38px;border-radius:8px">DidjoTheSHOP</b><a href="#">Boutique</a><a href="#panier">Panier (<span id="n">0</span>)</a><a href="#compte">Compte</a></header><main id="v"></main>
 <script>
 const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])),eur=c=>(c/100).toFixed(2).replace('.',',')+' €';
 const api=async(p,b)=>{const r=await fetch('/api/'+p,b?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}:{});const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||'Erreur');return j};
@@ -33,20 +34,14 @@ window.out=async()=>{await api('logout',{});me=null;location.href='/login'};init
 #intro.out{opacity:0;transform:scale(1.08);pointer-events:none}
 #intro .bg{position:absolute;inset:-20%;background:radial-gradient(circle at 20% 30%,#4f46e5 0,transparent 40%),radial-gradient(circle at 80% 70%,#06b6d4 0,transparent 40%),radial-gradient(circle at 50% 100%,#ec4899 0,transparent 45%);filter:blur(60px);opacity:.55;animation:introBg 10s ease-in-out infinite alternate}
 @keyframes introBg{to{transform:rotate(25deg) scale(1.2)}}
-#intro .cube{position:relative;width:90px;height:90px;margin-bottom:14px;transform-style:preserve-3d;animation:introSpin 6s linear infinite}
-#intro .cube i{position:absolute;inset:0;border:2px solid rgba(255,255,255,.75);background:rgba(255,255,255,.08)}
-#intro .cube i:nth-child(1){transform:translateZ(45px)}
-#intro .cube i:nth-child(2){transform:rotateY(180deg) translateZ(45px)}
-#intro .cube i:nth-child(3){transform:rotateY(90deg) translateZ(45px)}
-#intro .cube i:nth-child(4){transform:rotateY(-90deg) translateZ(45px)}
-#intro .cube i:nth-child(5){transform:rotateX(90deg) translateZ(45px)}
-#intro .cube i:nth-child(6){transform:rotateX(-90deg) translateZ(45px)}
-@keyframes introSpin{from{transform:rotateX(-20deg) rotateY(0)}to{transform:rotateX(-20deg) rotateY(360deg)}}
+#intro .logo{position:relative;width:120px;height:120px;border-radius:24px;box-shadow:0 12px 45px rgba(0,0,0,.55);animation:introLogo 1.4s cubic-bezier(.2,.9,.3,1.2) both,introFloat 3s ease-in-out 1.4s infinite alternate}
+@keyframes introLogo{from{opacity:0;transform:rotateY(-180deg) scale(.3)}to{opacity:1;transform:none}}
+@keyframes introFloat{from{transform:translateY(0)}to{transform:translateY(-10px)}}
 #intro .t{position:relative;font-size:clamp(34px,9vw,84px);font-weight:800;letter-spacing:-1px;line-height:1.1}
-#intro .t span{display:inline-block;opacity:0;animation:introLetter .8s cubic-bezier(.2,.9,.3,1.2) forwards;animation-delay:calc(var(--i)*70ms + 400ms)}
+#intro .t span{display:inline-block;opacity:0;animation:introLetter .8s cubic-bezier(.2,.9,.3,1.2) forwards;animation-delay:calc(var(--i)*70ms + 700ms)}
 @keyframes introLetter{from{opacity:0;transform:rotateX(-90deg) translateY(30px)}to{opacity:1;transform:none}}
-#intro .sub{position:relative;opacity:0;font-size:clamp(14px,3.5vw,20px);color:#cbd5e1;animation:introFade .8s ease 1.7s forwards}
-#intro .btns{position:relative;display:flex;gap:12px;flex-wrap:wrap;justify-content:center;opacity:0;animation:introFade .8s ease 2.2s forwards}
+#intro .sub{position:relative;opacity:0;font-size:clamp(14px,3.5vw,20px);color:#cbd5e1;animation:introFade .8s ease 2s forwards}
+#intro .btns{position:relative;display:flex;gap:12px;flex-wrap:wrap;justify-content:center;opacity:0;animation:introFade .8s ease 2.5s forwards}
 @keyframes introFade{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
 #intro button{font:inherit;font-weight:600;padding:12px 22px;border-radius:999px;border:1px solid rgba(255,255,255,.5);background:rgba(255,255,255,.1);color:#fff;cursor:pointer;transition:transform .2s,background .2s}
 #intro button:hover{transform:scale(1.06);background:rgba(255,255,255,.22)}
@@ -57,7 +52,7 @@ window.out=async()=>{await api('logout',{});me=null;location.href='/login'};init
 @keyframes cardIn{from{opacity:0;transform:translateY(24px) scale(.97)}}
 @media (prefers-reduced-motion:reduce){.grid .card{animation:none}}
 </style>
-<div id="intro"><div class="bg"></div><div class="cube"><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="t"></div><div class="sub">Bienvenue dans la boutique</div><div class="btns"><button class="go">Entrer</button><button class="snd">Entrer avec le son 🔊</button></div></div>
+<div id="intro"><div class="bg"></div><img class="logo" src="/logo.png" alt="DidjoTheSHOP"><div class="t"></div><div class="sub">Bienvenue dans la boutique</div><div class="btns"><button class="go">Entrer</button><button class="snd">Entrer avec le son 🔊</button></div></div>
 <script>
 (()=>{const I=document.getElementById('intro');if(!I)return;
 let seen=false;try{seen=sessionStorage.introSeen}catch{}
