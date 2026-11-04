@@ -1,5 +1,5 @@
 (function () {
-  const SRC = '/Musique_de_fond.mp3'; // doit être identique au nom du fichier dans public/ (majuscules comprises)
+  const SRC = '/Musique.mp3'; // doit être identique au nom du fichier dans public/ (majuscules comprises)
   const KEY = 'musique_active';
 
   const audio = new Audio(SRC);
