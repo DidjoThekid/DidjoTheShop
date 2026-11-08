@@ -1,7 +1,13 @@
 <!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Inscription · DidjoTheSHOP</title>
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;800&display=swap" rel="stylesheet"><link rel="stylesheet" href="/style.css"></head><body data-mode="register">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;800&display=swap" rel="stylesheet"><link rel="stylesheet" href="/style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" defer></script></head><body data-mode="register">
 <header><b>DidjoTheSHOP</b><a href="/">Boutique</a></header>
 <main><h1>Créer un compte</h1><p id="info" class="mut">Un code de vérification sera envoyé à ton adresse email.</p>
-<form id="f" class="form"><label for="n">Nom</label><input id="n" name="name" autocomplete="name" required><label for="e">Email</label><input id="e" name="email" type="email" autocomplete="email" required><label for="p">Mot de passe (8 caractères minimum)</label><input id="p" name="password" type="password" minlength="8" autocomplete="new-password" required><p><button>Créer mon compte</button></p><p class="mut">Déjà un compte ? <a href="/login">Se connecter</a></p></form>
-<form id="cf" class="form" hidden><label for="c">Code reçu par mail</label><input id="c" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="\d{6}" required><p><button>Valider</button></p></form>
-<p id="m"></p></main><script src="/auth.js"></script><script src="/musique.js"></script></body></html>
+<form id="f" class="form"><label for="n">Nom</label><input id="n" name="name" autocomplete="name" required><label for="e">Email</label><input id="e" name="email" type="email" autocomplete="email" required><label for="p">Mot de passe (8 caractères minimum)</label><input id="p" name="password" type="password" minlength="8" autocomplete="new-password" required>
+<label class="mut" style="display:flex;gap:8px;align-items:center;margin:14px 0"><input id="a2" type="checkbox" style="width:auto;margin:0"> Activer aussi l'application d'authentification (Google Authenticator, Microsoft Authenticator…)</label>
+<p><button>Créer mon compte</button></p><p class="mut">Déjà un compte ? <a href="/login">Se connecter</a></p></form>
+<form id="cf" class="form" hidden><label for="c" id="cl">Code reçu par mail</label><input id="c" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="\d{6}" required><p><button>Valider</button></p></form>
+<form id="tf" class="form" hidden><p><b>1.</b> Dans ton application, ajoute un compte en scannant ce QR code :</p><div id="qr" style="background:#fff;display:inline-block;padding:10px;border-radius:12px;border:1px solid #e5e7eb"></div>
+<p>Ou saisis cette clé à la main :<br><b id="sec" style="letter-spacing:2px;word-break:break-all"></b></p><p><a id="ou" href="#">Ouvrir dans mon application (sur téléphone)</a></p>
+<label for="tc"><b>2.</b> Code à 6 chiffres affiché dans l'application</label><input id="tc" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="\d{6}" required><p><button>Activer</button> <button type="button" id="skip">Passer</button></p></form>
+<p id="m"></p></main><script src="/auth.js"></script></body></html>
