@@ -11,6 +11,14 @@ const ok=(pw,h)=>{const a=Buffer.from(hash(pw,h.split(':')[0])),b=Buffer.from(h)
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const mail=(to,subject,html)=>fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:'Bearer '+E.RESEND_API_KEY,'Content-Type':'application/json'},body:JSON.stringify({from:E.MAIL_FROM,reply_to:E.MAIL_REPLY_TO,to,subject,html})}).then(async r=>{if(!r.ok)console.error('Resend',r.status,await r.text());return r.ok}).catch(e=>{console.error('Resend',e);return false});
 const uid=()=>crypto.randomBytes(6).toString('hex');
+
+/* ===== Application d'authentification (TOTP) ===== */
+const B32='ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+const b32enc=buf=>{let bits=0,val=0,out='';for(const x of buf){val=(val<<8)|x;bits+=8;while(bits>=5){out+=B32[(val>>>(bits-5))&31];bits-=5}}if(bits>0)out+=B32[(val<<(5-bits))&31];return out};
+const b32dec=s=>{let bits=0,val=0;const out=[];for(const c of String(s).replace(/=+$/,'').toUpperCase()){const i=B32.indexOf(c);if(i<0)continue;val=(val<<5)|i;bits+=5;if(bits>=8){out.push((val>>>(bits-8))&255);bits-=8}}return Buffer.from(out)};
+const hotp=(secret,step)=>{const m=Buffer.alloc(8);m.writeBigUInt64BE(BigInt(step));const h=crypto.createHmac('sha1',b32dec(secret)).update(m).digest();const o=h[19]&15;const n=((h[o]&127)<<24)|(h[o+1]<<16)|(h[o+2]<<8)|h[o+3];return String(n%1000000).padStart(6,'0')};
+const totpCheck=(secret,code,last=0)=>{if(!/^\d{6}$/.test(code))return 0;const now=Math.floor(Date.now()/3e4);for(let d=-1;d<=1;d++){const st=now+d;if(st>last&&hotp(secret,st)===code)return st}return 0};
+
 export default async function h(req,res){try{return await main(req,res)}catch(e){console.error(e);return res.status(500).json({error:'Erreur serveur : '+e.message})}}
 async function main(req,res){
   const path=new URL(req.url,'http://x').pathname.replace(/^\/api\//,'').replace(/\/$/,'');
@@ -21,15 +29,24 @@ async function main(req,res){
   if(ck){const[p,g]=ck.split('.');if(g&&g===sign(p)){try{const t=JSON.parse(Buffer.from(p,'base64url'));if(t.exp>Date.now())user=users.find(u=>u.id===t.id&&!u.banned)||null}catch{}}}
   const admin=!!user&&user.email===(E.ADMIN_EMAIL||'').toLowerCase();
   const start=u=>{const p=Buffer.from(JSON.stringify({id:u.id,exp:Date.now()+2592e6})).toString('base64url');login(p+'.'+sign(p))};
-  const pub=u=>({name:u.name,email:u.email,admin:u.email===(E.ADMIN_EMAIL||'').toLowerCase()});
+  const pub=u=>({name:u.name,email:u.email,admin:u.email===(E.ADMIN_EMAIL||'').toLowerCase(),totp:!!u.totp});
   const issue=async u=>{
     if(u.code&&u.code.sent>Date.now()-3e4)return send(429,{error:'Attends 30 secondes avant de redemander un code'});
     const c=String(crypto.randomInt(0,1e6)).padStart(6,'0');
     u.code={h:sign('c'+u.id+c),exp:Date.now()+6e5,tries:0,sent:Date.now()};await wr('users',users);
     const sent=await mail(u.email,'Ton code de connexion DidjoTheSHOP',`<p>Ton code : <b style="font-size:20px;letter-spacing:3px">${c}</b></p><p>Il est valable 10 minutes. Si ce n'est pas toi, ignore ce mail.</p>`);
-    return sent?send(200,{step:'code',email:u.email}):send(502,{error:"Impossible d'envoyer le code, réessaie plus tard"});
+    return sent?send(200,{step:'code',email:u.email,method:'mail'}):send(502,{error:"Impossible d'envoyer le code, réessaie plus tard"});
   };
   const stripeCustomer=async u=>{if(!u.stripeId){const c=await stripe.customers.create({email:u.email,name:u.name,metadata:{userId:u.id}});u.stripeId=c.id;await wr('users',users)}return u.stripeId};
+  const checkout=async(o,orders)=>{
+    const mode=o.items.some(i=>i.sub)?'subscription':'payment';
+    const line_items=o.items.map(i=>({quantity:i.qty,price_data:{currency:'eur',unit_amount:i.price,product_data:{name:i.name},...(i.sub?{recurring:{interval:'month'}}:{})}}));
+    if(o.shipping>0)line_items.push({quantity:1,price_data:{currency:'eur',unit_amount:o.shipping,product_data:{name:'Livraison'}}});
+    const params={ui_mode:'hosted_page',mode,customer:await stripeCustomer(user),client_reference_id:o.id,metadata:{orderId:o.id},line_items,success_url:origin+'/?session_id={CHECKOUT_SESSION_ID}#compte',cancel_url:origin+'/#compte',billing_address_collection:'required',phone_number_collection:{enabled:false},automatic_tax:{enabled:false},allow_promotion_codes:true,name_collection:{individual:{enabled:true,optional:true},business:{enabled:true,optional:true}},saved_payment_method_options:{payment_method_save:'enabled'},integration_identifier:'hosted_web_0001',origin_context:'web'};
+    if(mode==='payment')params.submit_type='auto';else params.payment_method_collection='always';
+    const s=await stripe.checkout.sessions.create(params);
+    o.sessionId=s.id;await wr('orders',orders);return s.url;
+  };
   if(path.startsWith('admin/')&&!admin)return send(403,{error:'Accès refusé'});
   if(path==='products')return send(200,{products:await rd('products',[]),shipping:(await rd('settings',{shipping:0})).shipping});
   if(path==='me')return send(200,user?pub(user):null);
@@ -52,16 +69,42 @@ async function main(req,res){
     const good=isAdm?pw.length===ap.length&&crypto.timingSafeEqual(pw,ap):ok(String(b.password||''),u.hash);
     if(!good){u.fails=(u.fails||0)+1;if(u.fails>=5){u.lock=Date.now()+9e5;u.fails=0}await wr('users',users);return send(401,{error:'Email ou mot de passe incorrect'})}
     if(u.banned)return send(403,{error:'Ce compte est suspendu'});
-    u.fails=0;return issue(u);
+    u.fails=0;
+    if(u.totp&&!b.mail){u.pend={exp:Date.now()+6e5,tries:0};await wr('users',users);return send(200,{step:'code',email:u.email,method:'totp'})}
+    delete u.pend;return issue(u);
   }
   if(path==='verify'){
     const u=users.find(x=>x.email===String(b.email||'').trim().toLowerCase());
+    const code=String(b.code||'').replace(/\s/g,'');
+    if(u&&!u.banned&&u.totp&&u.pend&&u.pend.exp>Date.now()){
+      const st=totpCheck(u.totp.secret,code,u.totp.last||0);
+      if(!st){u.pend.tries++;if(u.pend.tries>=5)delete u.pend;await wr('users',users);return send(400,{error:'Code incorrect'})}
+      u.totp.last=st;delete u.pend;u.verified=true;await wr('users',users);start(u);return send(200,pub(u));
+    }
     if(!u||u.banned||!u.code||u.code.exp<Date.now())return send(400,{error:'Code expiré : reconnecte-toi pour en recevoir un nouveau'});
-    const g=sign('c'+u.id+String(b.code||'').trim());
+    const g=sign('c'+u.id+code);
     if(!crypto.timingSafeEqual(Buffer.from(g),Buffer.from(u.code.h))){u.code.tries++;if(u.code.tries>=5)delete u.code;await wr('users',users);return send(400,{error:'Code incorrect'})}
-    delete u.code;u.verified=true;await wr('users',users);start(u);return send(200,pub(u));
+    delete u.code;delete u.pend;u.verified=true;await wr('users',users);start(u);return send(200,pub(u));
   }
   if(!user)return send(401,{error:'Connecte-toi pour continuer'});
+  if(path==='totp/setup'){
+    if(user.totp)return send(400,{error:"L'application d'authentification est déjà activée"});
+    const secret=b32enc(crypto.randomBytes(20));user.totpTmp=secret;await wr('users',users);
+    const uri='otpauth://totp/DidjoTheSHOP:'+encodeURIComponent(user.email)+'?secret='+secret+'&issuer=DidjoTheSHOP&algorithm=SHA1&digits=6&period=30';
+    return send(200,{secret,uri});
+  }
+  if(path==='totp/enable'){
+    if(!user.totpTmp)return send(400,{error:'Recommence : clique sur « Activer » pour générer une nouvelle clé'});
+    const st=totpCheck(user.totpTmp,String(b.code||'').replace(/\s/g,''));
+    if(!st)return send(400,{error:'Code incorrect. Vérifie l\'heure de ton téléphone et réessaie'});
+    user.totp={secret:user.totpTmp,last:st};delete user.totpTmp;await wr('users',users);return send(200,pub(user));
+  }
+  if(path==='totp/disable'){
+    if(!user.totp)return send(400,{error:"L'application d'authentification n'est pas activée"});
+    const st=totpCheck(user.totp.secret,String(b.code||'').replace(/\s/g,''),user.totp.last||0);
+    if(!st)return send(400,{error:'Code incorrect'});
+    delete user.totp;delete user.pend;await wr('users',users);return send(200,pub(user));
+  }
   if(path==='orders')return send(200,(await rd('orders',[])).filter(o=>o.userId===user.id&&!o.archived).reverse());
   if(path==='order'){
     const prods=await rd('products',[]),{shipping}=await rd('settings',{shipping:0});
@@ -70,7 +113,9 @@ async function main(req,res){
     const o={id:'DJ'+uid().toUpperCase(),userId:user.id,email:user.email,items,shipping,total:items.reduce((a,i)=>a+i.price*i.qty,0)+shipping,address:String(b.address).slice(0,400),status:'En préparation',tracking:'',paid:false,date:Date.now()};
     const orders=await rd('orders',[]);orders.push(o);await wr('orders',orders);
     await mail(user.email,`Commande ${o.id} enregistrée`,`<p>Bonjour ${esc(user.name)}, ta commande <b>${o.id}</b> est enregistrée (${(o.total/100).toFixed(2)} €).</p>`);
-    return send(200,o);
+    let url=null;
+    if(stripe){try{url=await checkout(o,orders)}catch(e){console.error('Stripe',e.message)}}
+    return send(200,{...o,url});
   }
   if(path==='cards'){
     if(!stripe||!user.stripeId)return send(200,[]);
@@ -78,18 +123,10 @@ async function main(req,res){
   }
   if(path==='pay'||path==='pay/confirm'){
     if(!stripe)return send(500,{error:'STRIPE_SECRET_KEY manquant dans les variables Vercel'});
-    const orders=await rd('orders',[]),o=orders.find(x=>x.id===b.orderId&&x.userId===user.id);
+    let orders,o;for(let i=0;i<4;i++){orders=await rd('orders',[]);o=orders.find(x=>x.id===b.orderId&&x.userId===user.id);if(o)break;await new Promise(r=>setTimeout(r,1200))}
     if(!o)return send(404,{error:'Commande introuvable'});
     if(o.paid)return send(200,{paid:true});
-    if(path==='pay'){
-      const mode=o.items.some(i=>i.sub)?'subscription':'payment';
-      const line_items=o.items.map(i=>({quantity:i.qty,price_data:{currency:'eur',unit_amount:i.price,product_data:{name:i.name},...(i.sub?{recurring:{interval:'month'}}:{})}}));
-      if(o.shipping>0)line_items.push({quantity:1,price_data:{currency:'eur',unit_amount:o.shipping,product_data:{name:'Livraison'}}});
-      const params={ui_mode:'hosted_page',mode,customer:await stripeCustomer(user),client_reference_id:o.id,metadata:{orderId:o.id},line_items,success_url:origin+'/?session_id={CHECKOUT_SESSION_ID}#compte',cancel_url:origin+'/#compte',billing_address_collection:'required',phone_number_collection:{enabled:false},automatic_tax:{enabled:false},allow_promotion_codes:true,name_collection:{individual:{enabled:true,optional:true},business:{enabled:true,optional:true}},saved_payment_method_options:{payment_method_save:'enabled'},integration_identifier:'hosted_web_0001',origin_context:'web'};
-      if(mode==='payment')params.submit_type='auto';else params.payment_method_collection='always';
-      const s=await stripe.checkout.sessions.create(params);
-      o.sessionId=s.id;await wr('orders',orders);return send(200,{url:s.url});
-    }
+    if(path==='pay')return send(200,{url:await checkout(o,orders)});
     const s=o.sessionId?await stripe.checkout.sessions.retrieve(o.sessionId):null;
     if(s&&s.payment_status==='paid'&&s.client_reference_id===o.id){o.paid=true;o.paidAmount=s.amount_total;await wr('orders',orders);await mail(user.email,`Paiement reçu pour la commande ${o.id}`,`<p>Merci ! Le paiement pour la commande <b>${o.id}</b> est bien reçu.</p>`);return send(200,{paid:true})}
     return send(200,{paid:false});
