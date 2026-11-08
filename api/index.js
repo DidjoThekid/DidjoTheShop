@@ -1,6 +1,8 @@
 import {put,head} from '@vercel/blob';
 import crypto from 'node:crypto';
+import Stripe from 'stripe';
 const E=process.env,P=`db-${E.DB_SECRET}/`;
+const stripe=E.STRIPE_SECRET_KEY?new Stripe(E.STRIPE_SECRET_KEY):null;
 const rd=async(n,d)=>{try{const b=await head(P+n+'.json');return await(await fetch(b.url+'?t='+Date.now(),{cache:'no-store'})).json()}catch{return d}};
 const wr=(n,v)=>put(P+n+'.json',JSON.stringify(v),{access:'public',addRandomSuffix:false,allowOverwrite:true,contentType:'application/json',cacheControlMaxAge:60});
 const sign=s=>crypto.createHmac('sha256',E.SESSION_SECRET).update(s).digest('base64url');
@@ -9,7 +11,6 @@ const ok=(pw,h)=>{const a=Buffer.from(hash(pw,h.split(':')[0])),b=Buffer.from(h)
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const mail=(to,subject,html)=>fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:'Bearer '+E.RESEND_API_KEY,'Content-Type':'application/json'},body:JSON.stringify({from:E.MAIL_FROM,reply_to:E.MAIL_REPLY_TO,to,subject,html})}).then(async r=>{if(!r.ok)console.error('Resend',r.status,await r.text());return r.ok}).catch(e=>{console.error('Resend',e);return false});
 const uid=()=>crypto.randomBytes(6).toString('hex');
-const sm=(m,p,body)=>fetch('https://api.sumup.com/v0.1'+p,{method:m,headers:{Authorization:'Bearer '+E.SUMUP_API_KEY,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}).then(async r=>{const j=await r.json().catch(()=>({}));if(!r.ok){console.error('SumUp',r.status,JSON.stringify(j));throw new Error('SumUp '+r.status+' '+JSON.stringify(j))}return j});
 export default async function h(req,res){try{return await main(req,res)}catch(e){console.error(e);return res.status(500).json({error:'Erreur serveur : '+e.message})}}
 async function main(req,res){
   const path=new URL(req.url,'http://x').pathname.replace(/^\/api\//,'').replace(/\/$/,'');
@@ -28,6 +29,7 @@ async function main(req,res){
     const sent=await mail(u.email,'Ton code de connexion DidjoTheSHOP',`<p>Ton code : <b style="font-size:20px;letter-spacing:3px">${c}</b></p><p>Il est valable 10 minutes. Si ce n'est pas toi, ignore ce mail.</p>`);
     return sent?send(200,{step:'code',email:u.email}):send(502,{error:"Impossible d'envoyer le code, réessaie plus tard"});
   };
+  const stripeCustomer=async u=>{if(!u.stripeId){const c=await stripe.customers.create({email:u.email,name:u.name,metadata:{userId:u.id}});u.stripeId=c.id;await wr('users',users)}return u.stripeId};
   if(path.startsWith('admin/')&&!admin)return send(403,{error:'Accès refusé'});
   if(path==='products')return send(200,{products:await rd('products',[]),shipping:(await rd('settings',{shipping:0})).shipping});
   if(path==='me')return send(200,user?pub(user):null);
@@ -70,29 +72,26 @@ async function main(req,res){
     await mail(user.email,`Commande ${o.id} enregistrée`,`<p>Bonjour ${esc(user.name)}, ta commande <b>${o.id}</b> est enregistrée (${(o.total/100).toFixed(2)} €).</p>`);
     return send(200,o);
   }
-    if(path==='cards'){
-    if(user.cardCo){try{console.log('card checkout',JSON.stringify(await sm('GET','/checkouts/'+user.cardCo)))}catch(e){console.error('card checkout',e.message)}}
-    try{const l=await sm('GET','/customers/'+encodeURIComponent(user.id)+'/payment-instruments');console.log('instruments',JSON.stringify(l));return send(200,(Array.isArray(l)?l:[]).filter(c=>c.active!==false).map(c=>({last4:c.card?.last_4_digits,brand:c.card?.type})))}catch(e){console.error('cards',e.message);return send(200,[])}
-  }
-  if(path==='card/setup'){
-    if(user.cust!==E.SUMUP_MERCHANT_CODE){
-      try{await sm('POST','/customers',{customer_id:user.id,personal_details:{email:user.email,first_name:user.name}})}catch(e){if(!/409|exist|duplicate|conflict/i.test(e.message))throw e}
-      user.cust=E.SUMUP_MERCHANT_CODE;await wr('users',users);
-    }
-    const c=await sm('POST','/checkouts',{checkout_reference:'card-'+uid(),amount:1,currency:'EUR',merchant_code:E.SUMUP_MERCHANT_CODE,description:'Verification de la carte DidjoTheSHOP',redirect_url:origin+'/#compte',customer_id:user.id,purpose:'SETUP_RECURRING_PAYMENT'});
-    user.cardCo=c.id;await wr('users',users);
-    return send(200,{checkoutId:c.id});
+  if(path==='cards'){
+    if(!stripe||!user.stripeId)return send(200,[]);
+    try{const l=await stripe.paymentMethods.list({customer:user.stripeId,type:'card',limit:10});return send(200,l.data.map(p=>({brand:p.card.brand,last4:p.card.last4})))}catch{return send(200,[])}
   }
   if(path==='pay'||path==='pay/confirm'){
+    if(!stripe)return send(500,{error:'STRIPE_SECRET_KEY manquant dans les variables Vercel'});
     const orders=await rd('orders',[]),o=orders.find(x=>x.id===b.orderId&&x.userId===user.id);
     if(!o)return send(404,{error:'Commande introuvable'});
     if(o.paid)return send(200,{paid:true});
     if(path==='pay'){
-      const c=await sm('POST','/checkouts',{checkout_reference:o.id+'-'+uid(),amount:o.total/100,currency:'EUR',merchant_code:E.SUMUP_MERCHANT_CODE,description:'Commande '+o.id,redirect_url:origin+'/#compte'});
-      o.checkoutId=c.id;await wr('orders',orders);return send(200,{checkoutId:c.id});
+      const mode=o.items.some(i=>i.sub)?'subscription':'payment';
+      const line_items=o.items.map(i=>({quantity:i.qty,price_data:{currency:'eur',unit_amount:i.price,product_data:{name:i.name},...(i.sub?{recurring:{interval:'month'}}:{})}}));
+      if(o.shipping>0)line_items.push({quantity:1,price_data:{currency:'eur',unit_amount:o.shipping,product_data:{name:'Livraison'}}});
+      const params={ui_mode:'hosted_page',mode,customer:await stripeCustomer(user),client_reference_id:o.id,metadata:{orderId:o.id},line_items,success_url:origin+'/?session_id={CHECKOUT_SESSION_ID}#compte',cancel_url:origin+'/#compte',billing_address_collection:'required',phone_number_collection:{enabled:false},automatic_tax:{enabled:false},allow_promotion_codes:true,name_collection:{individual:{enabled:true,optional:true},business:{enabled:true,optional:true}},saved_payment_method_options:{payment_method_save:'enabled'},integration_identifier:'hosted_web_0001',origin_context:'web'};
+      if(mode==='payment')params.submit_type='auto';else params.payment_method_collection='always';
+      const s=await stripe.checkout.sessions.create(params);
+      o.sessionId=s.id;await wr('orders',orders);return send(200,{url:s.url});
     }
-    const c=o.checkoutId?await sm('GET','/checkouts/'+o.checkoutId):{};
-    if(c.status==='PAID'&&Math.round(c.amount*100)===o.total){o.paid=true;await wr('orders',orders);await mail(user.email,`Paiement reçu pour la commande ${o.id}`,`<p>Merci ! Le paiement de <b>${(o.total/100).toFixed(2)} €</b> pour la commande <b>${o.id}</b> est bien reçu.</p>`);return send(200,{paid:true})}
+    const s=o.sessionId?await stripe.checkout.sessions.retrieve(o.sessionId):null;
+    if(s&&s.payment_status==='paid'&&s.client_reference_id===o.id){o.paid=true;o.paidAmount=s.amount_total;await wr('orders',orders);await mail(user.email,`Paiement reçu pour la commande ${o.id}`,`<p>Merci ! Le paiement pour la commande <b>${o.id}</b> est bien reçu.</p>`);return send(200,{paid:true})}
     return send(200,{paid:false});
   }
   if(path==='admin/mail-html'){
