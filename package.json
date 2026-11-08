@@ -1,1 +1,1 @@
-{"name":"didjotheshop","private":true,"type":"module","dependencies":{"@vercel/blob":"^1.0.0"}}
+{"name":"didjotheshop","private":true,"type":"module","dependencies":{"@vercel/blob":"^1.0.0","stripe":"^21.0.0"}}
