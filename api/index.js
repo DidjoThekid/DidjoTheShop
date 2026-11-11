@@ -162,8 +162,12 @@ async function main(req,res){
   }
   if(path==='portal'){
     if(!stripe)return send(500,{error:'STRIPE_SECRET_KEY manquant dans les variables Vercel'});
-    try{const s=await stripe.billingPortal.sessions.create({customer:await stripeCustomer(user),return_url:origin+'/#compte'});return send(200,{url:s.url})}
-    catch(e){console.error('Portail',e.message);return send(500,{error:"Portail Stripe indisponible : active-le dans Stripe (Paramètres > Facturation > Portail client)"})}
+    try{
+      const par={customer:await stripeCustomer(user),return_url:origin+'/#compte'};
+      if(b.flow==='payment_method')par.flow_data={type:'payment_method_update'};
+      const s=await stripe.billingPortal.sessions.create(par);
+      return send(200,{url:s.url});
+    }catch(e){console.error('Portail',e.message);return send(500,{error:"Portail Stripe indisponible : dans Stripe, active le portail client (Paramètres > Facturation > Portail client) et autorise la mise à jour des moyens de paiement"})}
   }
   if(path==='pay'||path==='pay/confirm'){
     if(!stripe)return send(500,{error:'STRIPE_SECRET_KEY manquant dans les variables Vercel'});
@@ -177,7 +181,7 @@ async function main(req,res){
   }
   if(path==='admin/maintenance'){
     const on=!!b.on;
-    if(!!MT.on===on)return send(200,{on,sent:0,unchanged:true});
+    if(!!MT.on===on)return send(200,{on,sent:0,total:0,unchanged:true});
     await wr('maintenance',{on,at:Date.now()});
     const m=on?MAIL_START:MAIL_END;
     const to=[...new Set(users.filter(u=>!u.banned&&u.email).map(u=>u.email))];
@@ -219,3 +223,4 @@ async function main(req,res){
   if(path==='admin/order-delete'){const orders=await rd('orders',[]),o=orders.find(x=>x.id===b.id);if(!o||!o.archived)return send(400,{error:'Seules les commandes livrées (archivées) peuvent être supprimées'});await wr('orders',orders.filter(x=>x.id!==b.id));return send(200,{})}
   send(404,{error:'Introuvable'});
 }
+      
