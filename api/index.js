@@ -12,6 +12,34 @@ const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&g
 const mail=(to,subject,html)=>fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:'Bearer '+E.RESEND_API_KEY,'Content-Type':'application/json'},body:JSON.stringify({from:E.MAIL_FROM,reply_to:E.MAIL_REPLY_TO,to,subject,html})}).then(async r=>{if(!r.ok)console.error('Resend',r.status,await r.text());return r.ok}).catch(e=>{console.error('Resend',e);return false});
 const uid=()=>crypto.randomBytes(6).toString('hex');
 
+/* ===== Mails de maintenance ===== */
+const MAIL_START={s:'Maintenance en cours sur DidjoTheSHOP',t:`Bonjour,
+Nous vous informons qu'une maintenance est actuellement en cours sur DidjoTheSHOP.
+Cette intervention a pour objectif d'améliorer nos services et de garantir une meilleure expérience d'utilisation. Durant cette période, certaines fonctionnalités du site peuvent être temporairement indisponibles.
+Nous mettons tout en œuvre pour rétablir l'ensemble des services dans les meilleurs délais.
+Nous vous remercions pour votre patience, votre compréhension et votre confiance.
+L'équipe DidjoTheSHOP`};
+const MAIL_END={s:'Maintenance terminée – DidjoTheSHOP est de nouveau disponible',t:`Bonjour,
+Nous avons le plaisir de vous informer que la maintenance de DidjoTheSHOP est désormais terminée.
+Tous nos services sont de nouveau disponibles et vous pouvez dès à présent utiliser le site normalement.
+Cette maintenance nous a permis d'améliorer notre plateforme afin de vous offrir une expérience plus fiable, plus sécurisée et plus performante.
+Nous vous remercions sincèrement pour votre patience, votre compréhension et votre confiance durant cette intervention.
+Si vous rencontrez la moindre difficulté ou si vous avez une question, notre équipe reste à votre disposition.
+Nous vous souhaitons une excellente expérience sur DidjoTheSHOP.
+Cordialement,
+L'équipe DidjoTheSHOP
+📧 contact@teamdtk.fr`};
+const mailAll=async(to,subject,text)=>{
+  const html='<div style="font-family:Arial,sans-serif;font-size:16px;line-height:1.5;color:#142033">'+text.split('\n').filter(l=>l.trim()).map(l=>`<p style="margin:0 0 12px">${esc(l)}</p>`).join('')+'</div>';
+  let sent=0;
+  for(let i=0;i<to.length;i+=100){
+    const r=await fetch('https://api.resend.com/emails/batch',{method:'POST',headers:{Authorization:'Bearer '+E.RESEND_API_KEY,'Content-Type':'application/json'},body:JSON.stringify(to.slice(i,i+100).map(e=>({from:E.MAIL_FROM,reply_to:E.MAIL_REPLY_TO,to:[e],subject,html})))});
+    if(r.ok)sent+=Math.min(100,to.length-i);else console.error('Resend batch',r.status,await r.text());
+    if(i+100<to.length)await new Promise(x=>setTimeout(x,600));
+  }
+  return sent;
+};
+
 /* ===== Application d'authentification (TOTP) ===== */
 const B32='ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 const b32enc=buf=>{let bits=0,val=0,out='';for(const x of buf){val=(val<<8)|x;bits+=8;while(bits>=5){out+=B32[(val>>>(bits-5))&31];bits-=5}}if(bits>0)out+=B32[(val<<(5-bits))&31];return out};
@@ -40,13 +68,22 @@ async function main(req,res){
   const stripeCustomer=async u=>{if(!u.stripeId){const c=await stripe.customers.create({email:u.email,name:u.name,metadata:{userId:u.id}});u.stripeId=c.id;await wr('users',users)}return u.stripeId};
   const checkout=async(o,orders)=>{
     const mode=o.items.some(i=>i.sub)?'subscription':'payment';
-    const line_items=o.items.map(i=>({quantity:i.qty,price_data:{currency:'eur',unit_amount:i.price,product_data:{name:i.name},...(i.sub?{recurring:{interval:'month'}}:{})}}));
+    const line_items=o.items.map(i=>({quantity:i.qty,price_data:{currency:'eur',unit_amount:i.price,product_data:{name:i.virtual?i.name+' (virtuel, non remboursable)':i.name},...(i.sub?{recurring:{interval:'month'}}:{})}}));
     if(o.shipping>0)line_items.push({quantity:1,price_data:{currency:'eur',unit_amount:o.shipping,product_data:{name:'Livraison'}}});
     const params={ui_mode:'hosted_page',mode,customer:await stripeCustomer(user),client_reference_id:o.id,metadata:{orderId:o.id},line_items,success_url:origin+'/?session_id={CHECKOUT_SESSION_ID}#compte',cancel_url:origin+'/#compte',billing_address_collection:'required',phone_number_collection:{enabled:false},automatic_tax:{enabled:false},allow_promotion_codes:true,name_collection:{individual:{enabled:true,optional:true},business:{enabled:true,optional:true}},saved_payment_method_options:{payment_method_save:'enabled'},integration_identifier:'hosted_web_0001',origin_context:'web'};
     if(mode==='payment')params.submit_type='auto';else params.payment_method_collection='always';
     const s=await stripe.checkout.sessions.create(params);
     o.sessionId=s.id;await wr('orders',orders);return s.url;
   };
+
+  /* ===== Mode maintenance ===== */
+  const MT=await rd('maintenance',{on:false});
+  if(path==='maintenance')return send(200,{on:!!MT.on});
+  if(MT.on&&!admin&&!['me','logout','verify'].includes(path)){
+    const admLogin=path==='login'&&String(b.email||'').trim().toLowerCase()===(E.ADMIN_EMAIL||'').toLowerCase();
+    if(!admLogin)return send(503,{error:'Maintenance en cours : réessaie dans quelques instants',maintenance:true});
+  }
+
   if(path.startsWith('admin/')&&!admin)return send(403,{error:'Accès refusé'});
   if(path==='products')return send(200,{products:await rd('products',[]),shipping:(await rd('settings',{shipping:0})).shipping});
   if(path==='me')return send(200,user?pub(user):null);
@@ -108,9 +145,11 @@ async function main(req,res){
   if(path==='orders')return send(200,(await rd('orders',[])).filter(o=>o.userId===user.id&&!o.archived).reverse());
   if(path==='order'){
     const prods=await rd('products',[]),{shipping}=await rd('settings',{shipping:0});
-    const items=(b.items||[]).map(i=>{const p=prods.find(x=>x.id===i.id);return p&&{id:p.id,name:p.name,price:p.price,sub:!!p.sub,qty:Math.min(99,Math.max(1,i.qty|0))}}).filter(Boolean);
-    if(!items.length||String(b.address||'').trim().length<10)return send(400,{error:'Panier vide ou adresse incomplète'});
-    const o={id:'DJ'+uid().toUpperCase(),userId:user.id,email:user.email,items,shipping,total:items.reduce((a,i)=>a+i.price*i.qty,0)+shipping,address:String(b.address).slice(0,400),status:'En préparation',tracking:'',paid:false,date:Date.now()};
+    const items=(b.items||[]).map(i=>{const p=prods.find(x=>x.id===i.id);return p&&{id:p.id,name:p.name,price:p.price,sub:!!p.sub,virtual:!!p.virtual,qty:Math.min(99,Math.max(1,i.qty|0))}}).filter(Boolean);
+    const hasReal=items.some(i=>!i.virtual),hasVirt=items.some(i=>i.virtual),ship=hasReal?shipping:0;
+    if(!items.length||(hasReal&&String(b.address||'').trim().length<10))return send(400,{error:'Panier vide ou adresse incomplète'});
+    if(hasVirt&&b.acceptVirtual!==true)return send(400,{error:'Tu dois accepter que les articles virtuels ne sont pas remboursables'});
+    const o={id:'DJ'+uid().toUpperCase(),userId:user.id,email:user.email,items,shipping:ship,total:items.reduce((a,i)=>a+i.price*i.qty,0)+ship,address:String(b.address||'').slice(0,400),status:'En préparation',tracking:'',paid:false,date:Date.now(),virtualConsent:hasVirt?Date.now():0};
     const orders=await rd('orders',[]);orders.push(o);await wr('orders',orders);
     await mail(user.email,`Commande ${o.id} enregistrée`,`<p>Bonjour ${esc(user.name)}, ta commande <b>${o.id}</b> est enregistrée (${(o.total/100).toFixed(2)} €).</p>`);
     let url=null;
@@ -121,6 +160,11 @@ async function main(req,res){
     if(!stripe||!user.stripeId)return send(200,[]);
     try{const l=await stripe.paymentMethods.list({customer:user.stripeId,type:'card',limit:10});return send(200,l.data.map(p=>({brand:p.card.brand,last4:p.card.last4})))}catch{return send(200,[])}
   }
+  if(path==='portal'){
+    if(!stripe)return send(500,{error:'STRIPE_SECRET_KEY manquant dans les variables Vercel'});
+    try{const s=await stripe.billingPortal.sessions.create({customer:await stripeCustomer(user),return_url:origin+'/#compte'});return send(200,{url:s.url})}
+    catch(e){console.error('Portail',e.message);return send(500,{error:"Portail Stripe indisponible : active-le dans Stripe (Paramètres > Facturation > Portail client)"})}
+  }
   if(path==='pay'||path==='pay/confirm'){
     if(!stripe)return send(500,{error:'STRIPE_SECRET_KEY manquant dans les variables Vercel'});
     let orders,o;for(let i=0;i<4;i++){orders=await rd('orders',[]);o=orders.find(x=>x.id===b.orderId&&x.userId===user.id);if(o)break;await new Promise(r=>setTimeout(r,1200))}
@@ -130,6 +174,15 @@ async function main(req,res){
     const s=o.sessionId?await stripe.checkout.sessions.retrieve(o.sessionId):null;
     if(s&&s.payment_status==='paid'&&s.client_reference_id===o.id){o.paid=true;o.paidAmount=s.amount_total;await wr('orders',orders);await mail(user.email,`Paiement reçu pour la commande ${o.id}`,`<p>Merci ! Le paiement pour la commande <b>${o.id}</b> est bien reçu.</p>`);return send(200,{paid:true})}
     return send(200,{paid:false});
+  }
+  if(path==='admin/maintenance'){
+    const on=!!b.on;
+    if(!!MT.on===on)return send(200,{on,sent:0,unchanged:true});
+    await wr('maintenance',{on,at:Date.now()});
+    const m=on?MAIL_START:MAIL_END;
+    const to=[...new Set(users.filter(u=>!u.banned&&u.email).map(u=>u.email))];
+    const sent=await mailAll(to,m.s,m.t);
+    return send(200,{on,sent,total:to.length});
   }
   if(path==='admin/mail-html'){
     const T=['p','br','div','span','b','strong','i','em','u','s','strike','h1','h2','h3','ul','ol','li','a','blockquote','hr','font'];
@@ -148,7 +201,8 @@ async function main(req,res){
   if(path==='admin/product'){
     let ps=await rd('products',[]);
     if(b.del)ps=ps.filter(p=>p.id!==b.id);
-    else{const p={id:b.id||uid(),name:String(b.name||'').slice(0,80),desc:String(b.desc||'').slice(0,400),price:Math.round(Number(b.price)*100)||0,image:String(b.image||''),sub:!!b.sub};
+    else{const old=ps.find(x=>x.id===b.id);
+      const p={id:b.id||uid(),name:String(b.name||'').slice(0,80),desc:String(b.desc||'').slice(0,400),price:Math.round(Number(b.price)*100)||0,image:String(b.image||''),sub:!!b.sub,virtual:b.virtual===undefined?!!(old&&old.virtual):!!b.virtual};
       if(!p.name||p.price<=0)return send(400,{error:'Nom et prix requis'});
       const i=ps.findIndex(x=>x.id===p.id);i<0?ps.push(p):ps[i]=p}
     await wr('products',ps);return send(200,{});
