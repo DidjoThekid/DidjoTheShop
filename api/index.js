@@ -57,7 +57,7 @@ async function main(req,res){
   if(ck){const[p,g]=ck.split('.');if(g&&g===sign(p)){try{const t=JSON.parse(Buffer.from(p,'base64url'));if(t.exp>Date.now())user=users.find(u=>u.id===t.id&&!u.banned)||null}catch{}}}
   const admin=!!user&&user.email===(E.ADMIN_EMAIL||'').toLowerCase();
   const start=u=>{const p=Buffer.from(JSON.stringify({id:u.id,exp:Date.now()+2592e6})).toString('base64url');login(p+'.'+sign(p))};
-  const pub=u=>({name:u.name,email:u.email,admin:u.email===(E.ADMIN_EMAIL||'').toLowerCase(),totp:!!u.totp,address:u.address||'',employee:!!u.employee});
+  const pub=u=>({name:u.name,email:u.email,admin:u.email===(E.ADMIN_EMAIL||'').toLowerCase(),totp:!!u.totp,address:u.address||'',employee:!!u.employee,unsubscribed:!!u.unsubscribed});
   const issue=async u=>{
     if(u.code&&u.code.sent>Date.now()-3e4)return send(429,{error:'Attends 30 secondes avant de redemander un code'});
     const c=String(crypto.randomInt(0,1e6)).padStart(6,'0');
@@ -137,6 +137,7 @@ async function main(req,res){
     const name=String(b.name||'').trim().slice(0,60);
     if(!name)return send(400,{error:'Le nom est requis'});
     user.name=name;user.address=String(b.address||'').trim().slice(0,400);
+    if(b.unsubscribed!==undefined) user.unsubscribed=!!b.unsubscribed;
     await wr('users',users);return send(200,pub(user));
   }
   if(path==='password'){
@@ -229,7 +230,7 @@ async function main(req,res){
     if(!!MT.on===on)return send(200,{on,sent:0,total:0,unchanged:true});
     await wr('maintenance',{on,at:Date.now()});
     const m=on?MAIL_START:MAIL_END;
-    const to=[...new Set(users.filter(u=>!u.banned&&u.email).map(u=>u.email))];
+    const to=[...new Set(users.filter(u=>!u.banned && !u.unsubscribed && u.email).map(u=>u.email))];
     const sent=await mailAll(to,m.s,m.t);
     return send(200,{on,sent,total:to.length});
   }
@@ -239,14 +240,16 @@ async function main(req,res){
     const subject=String(b.subject||'').trim().slice(0,150),body=clean(b.html);
     if(!subject||!body.replace(/<[^>]*>/g,'').trim())return send(400,{error:'Objet et message requis'});
     const one=String(b.other||'').trim().toLowerCase()||(b.to==='all'?'':String(b.to||'').trim().toLowerCase());
-    const to=one?[one]:users.filter(u=>!u.banned).map(u=>u.email).slice(0,100);
+    // Filtrer les désabonnés si envoi à "tous"
+    const eligibleUsers = users.filter(u=>!u.banned && !u.unsubscribed);
+    const to=one?[one]:eligibleUsers.map(u=>u.email).slice(0,100);
     if(!to.length||to.some(e=>!/^\S+@\S+\.\S+$/.test(e)))return send(400,{error:'Destinataire invalide'});
     const html='<div style="font-family:Arial,sans-serif;font-size:16px;line-height:1.5;color:#142033">'+body+'</div>';
     const r=await fetch('https://api.resend.com/emails/batch',{method:'POST',headers:{Authorization:'Bearer '+E.RESEND_API_KEY,'Content-Type':'application/json'},body:JSON.stringify(to.map(e=>({from:E.MAIL_FROM,reply_to:E.MAIL_REPLY_TO,to:[e],subject,html})))});
     if(!r.ok)return send(502,{error:"Resend a refusé l'envoi : vérifie la clé API et le domaine"});
     return send(200,{sent:to.length});
   }
-  if(path==='admin/data')return send(200,{products:await rd('products',[]),orders:(await rd('orders',[])).reverse().map(o=>({...o,name:users.find(u=>u.id===o.userId)?.name||''})),users:users.map(u=>({id:u.id,name:u.name,email:u.email,banned:u.banned,employee:!!u.employee})),shipping:(await rd('settings',{shipping:0})).shipping});
+  if(path==='admin/data')return send(200,{products:await rd('products',[]),orders:(await rd('orders',[])).reverse().map(o=>({...o,name:users.find(u=>u.id===o.userId)?.name||''})),users:users.map(u=>({id:u.id,name:u.name,email:u.email,banned:u.banned,employee:!!u.employee,unsubscribed:!!u.unsubscribed})),shipping:(await rd('settings',{shipping:0})).shipping});
   
   if(path==='admin/user-create'){
     const email=String(b.email||'').trim().toLowerCase(),name=String(b.name||'').trim().slice(0,60);
@@ -256,7 +259,13 @@ async function main(req,res){
     users.push(u);await wr('users',users);
     return send(200,{name:u.name,email:u.email,password:b.password});
   }
-  
+  if(path==='admin/user-update'){
+    const u=users.find(x=>x.id===b.id);
+    if(!u)return send(404,{error:'Utilisateur introuvable'});
+    if(b.employee!==undefined) u.employee=!!b.employee;
+    await wr('users',users);
+    return send(200,{});
+  }
   if(path==='admin/product'){
     let ps=await rd('products',[]);
     if(b.del)ps=ps.filter(p=>p.id!==b.id);
@@ -276,17 +285,11 @@ async function main(req,res){
     return send(200,{});
   }
   if(path==='admin/order-delete'){const orders=await rd('orders',[]),o=orders.find(x=>x.id===b.id);if(!o||!o.archived)return send(400,{error:'Seules les commandes livrées (archivées) peuvent être supprimées'});await wr('orders',orders.filter(x=>x.id!==b.id));return send(200,{})}
-  send(404,{error:'Introuvable'});
-}
-  /* ... tout le code précédent reste identique ... */
-
-  if(path==='admin/order-delete'){const orders=await rd('orders',[]),o=orders.find(x=>x.id===b.id);if(!o||!o.archived)return send(400,{error:'Seules les commandes livrées (archivées) peuvent être supprimées'});await wr('orders',orders.filter(x=>x.id!==b.id));return send(200,{})}
   
   /* ===== Route Publique Employés ===== */
   if(path==='employees'){
-      // Renvoie uniquement les utilisateurs marqués comme employés
-      const employees = users.filter(u=>u.employee && !u.banned).map(u=>({name:u.name, email:u.email}));
-      return send(200, employees);
+    const emps = users.filter(u=>u.employee && !u.banned).map(u=>({name:u.name, email:u.email}));
+    return send(200, emps);
   }
 
   send(404,{error:'Introuvable'});
