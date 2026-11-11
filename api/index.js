@@ -278,3 +278,16 @@ async function main(req,res){
   if(path==='admin/order-delete'){const orders=await rd('orders',[]),o=orders.find(x=>x.id===b.id);if(!o||!o.archived)return send(400,{error:'Seules les commandes livrées (archivées) peuvent être supprimées'});await wr('orders',orders.filter(x=>x.id!==b.id));return send(200,{})}
   send(404,{error:'Introuvable'});
 }
+  /* ... tout le code précédent reste identique ... */
+
+  if(path==='admin/order-delete'){const orders=await rd('orders',[]),o=orders.find(x=>x.id===b.id);if(!o||!o.archived)return send(400,{error:'Seules les commandes livrées (archivées) peuvent être supprimées'});await wr('orders',orders.filter(x=>x.id!==b.id));return send(200,{})}
+  
+  /* ===== Route Publique Employés ===== */
+  if(path==='employees'){
+      // Renvoie uniquement les utilisateurs marqués comme employés
+      const employees = users.filter(u=>u.employee && !u.banned).map(u=>({name:u.name, email:u.email}));
+      return send(200, employees);
+  }
+
+  send(404,{error:'Introuvable'});
+}
