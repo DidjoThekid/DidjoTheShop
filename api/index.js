@@ -12,6 +12,28 @@ const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&g
 const mail=(to,subject,html)=>fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:'Bearer '+E.RESEND_API_KEY,'Content-Type':'application/json'},body:JSON.stringify({from:E.MAIL_FROM,reply_to:E.MAIL_REPLY_TO,to,subject,html})}).then(async r=>{if(!r.ok)console.error('Resend',r.status,await r.text());return r.ok}).catch(e=>{console.error('Resend',e);return false});
 const uid=()=>crypto.randomBytes(6).toString('hex');
 
+/* ===== SMS (Twilio) ===== */
+const smsOn=!!(E.TWILIO_ACCOUNT_SID&&E.TWILIO_AUTH_TOKEN&&(E.TWILIO_FROM||E.TWILIO_MESSAGING_SERVICE_SID));
+const sms=async(to,body)=>{
+  if(!smsOn)return false;
+  const p=new URLSearchParams({To:to,Body:body});
+  if(E.TWILIO_MESSAGING_SERVICE_SID)p.set('MessagingServiceSid',E.TWILIO_MESSAGING_SERVICE_SID);else p.set('From',E.TWILIO_FROM);
+  try{
+    const r=await fetch(`https://api.twilio.com/2010-04-01/Accounts/${E.TWILIO_ACCOUNT_SID}/Messages.json`,{method:'POST',headers:{Authorization:'Basic '+Buffer.from(E.TWILIO_ACCOUNT_SID+':'+E.TWILIO_AUTH_TOKEN).toString('base64'),'Content-Type':'application/x-www-form-urlencoded'},body:p});
+    if(!r.ok)console.error('SMS',r.status,await r.text());
+    return r.ok;
+  }catch(e){console.error('SMS',e);return false}
+};
+const normPhone=s=>{
+  let n=String(s||'').replace(/[\s.\-()]/g,'');
+  if(n.startsWith('00'))n='+'+n.slice(2);
+  else if(/^0\d{9}$/.test(n))n='+33'+n.slice(1);
+  if(!/^\+[1-9]\d{7,14}$/.test(n))return '';
+  if(n.startsWith('+33')&&!/^\+33[67]\d{8}$/.test(n))return '';
+  return n;
+};
+const maskPhone=n=>n.slice(0,4)+'•'.repeat(Math.max(0,n.length-6))+n.slice(-2);
+
 /* ===== Mails de maintenance ===== */
 const MAIL_START={s:'Maintenance en cours sur DidjoTheSHOP',t:`Bonjour,
 Nous vous informons qu'une maintenance est actuellement en cours sur DidjoTheSHOP.
@@ -57,7 +79,7 @@ async function main(req,res){
   if(ck){const[p,g]=ck.split('.');if(g&&g===sign(p)){try{const t=JSON.parse(Buffer.from(p,'base64url'));if(t.exp>Date.now())user=users.find(u=>u.id===t.id&&!u.banned)||null}catch{}}}
   const admin=!!user&&user.email===(E.ADMIN_EMAIL||'').toLowerCase();
   const start=u=>{const p=Buffer.from(JSON.stringify({id:u.id,exp:Date.now()+2592e6})).toString('base64url');login(p+'.'+sign(p))};
-  const pub=u=>({name:u.name,email:u.email,admin:u.email===(E.ADMIN_EMAIL||'').toLowerCase(),totp:!!u.totp});
+  const pub=u=>({name:u.name,email:u.email,admin:u.email===(E.ADMIN_EMAIL||'').toLowerCase(),totp:!!u.totp,address:u.address||'',phone:u.phone?{num:maskPhone(u.phone.num),verified:!!u.phone.verified,opt:!!u.phone.opt}:null,sms:smsOn});
   const issue=async u=>{
     if(u.code&&u.code.sent>Date.now()-3e4)return send(429,{error:'Attends 30 secondes avant de redemander un code'});
     const c=String(crypto.randomInt(0,1e6)).padStart(6,'0');
@@ -93,7 +115,11 @@ async function main(req,res){
     if(email===(E.ADMIN_EMAIL||'').toLowerCase())return send(403,{error:'Cette adresse est réservée'});
     if(!name||!/^\S+@\S+\.\S+$/.test(email)||String(b.password||'').length<8)return send(400,{error:'Nom, email valide et mot de passe de 8 caractères minimum requis'});
     if(users.some(u=>u.email===email))return send(409,{error:'Un compte existe déjà avec cet email'});
-    const u={id:uid(),name,email,hash:hash(b.password),banned:false,created:Date.now()};users.push(u);return issue(u);
+    const phone=b.phone?normPhone(b.phone):'';
+    if(b.phone&&!phone)return send(400,{error:'Numéro de mobile invalide (ex. 06 12 34 56 78 ou +33 6 12 34 56 78)'});
+    const u={id:uid(),name,email,hash:hash(b.password),banned:false,created:Date.now()};
+    if(phone)u.phone={num:phone,verified:false,opt:false};
+    users.push(u);return issue(u);
   }
   if(path==='login'){
     const em=String(b.email||'').trim().toLowerCase(),isAdm=em===(E.ADMIN_EMAIL||'').toLowerCase();
@@ -124,6 +150,75 @@ async function main(req,res){
     delete u.code;delete u.pend;u.verified=true;await wr('users',users);start(u);return send(200,pub(u));
   }
   if(!user)return send(401,{error:'Connecte-toi pour continuer'});
+  /* ===== Mes informations ===== */
+  const pwCheck=async pw=>{
+    if(user.lock>Date.now())return 'Trop de tentatives : réessaie dans quelques minutes';
+    if(user.hash&&ok(String(pw||''),user.hash)){user.fails=0;return ''}
+    user.fails=(user.fails||0)+1;if(user.fails>=5){user.lock=Date.now()+9e5;user.fails=0}
+    await wr('users',users);return 'Mot de passe incorrect';
+  };
+  if(path==='profile'){
+    const name=String(b.name||'').trim().slice(0,60);
+    if(!name)return send(400,{error:'Le nom est requis'});
+    user.name=name;user.address=String(b.address||'').trim().slice(0,400);
+    await wr('users',users);return send(200,pub(user));
+  }
+  if(path==='password'){
+    if(admin)return send(400,{error:'Le mot de passe admin se change dans les variables Vercel (ADMIN_PASSWORD)'});
+    const er=await pwCheck(b.current);if(er)return send(401,{error:er});
+    if(String(b.next||'').length<8)return send(400,{error:'Le nouveau mot de passe doit faire 8 caractères minimum'});
+    user.hash=hash(String(b.next));await wr('users',users);return send(200,{});
+  }
+  if(path==='email/change'){
+    if(admin)return send(400,{error:"L'adresse du compte administrateur ne peut pas être changée"});
+    const em=String(b.email||'').trim().toLowerCase();
+    if(!/^\S+@\S+\.\S+$/.test(em))return send(400,{error:'Adresse e-mail invalide'});
+    if(em===(E.ADMIN_EMAIL||'').toLowerCase()||users.some(u=>u.email===em))return send(409,{error:'Cette adresse est déjà utilisée'});
+    const er=await pwCheck(b.password);if(er)return send(401,{error:er});
+    if(user.emailChange&&user.emailChange.sent>Date.now()-3e4)return send(429,{error:'Attends 30 secondes avant de redemander un code'});
+    const c=String(crypto.randomInt(0,1e6)).padStart(6,'0');
+    user.emailChange={email:em,h:sign('e'+user.id+em+c),exp:Date.now()+6e5,tries:0,sent:Date.now()};await wr('users',users);
+    const sent=await mail(em,'Confirme ta nouvelle adresse DidjoTheSHOP',`<p>Ton code : <b style="font-size:20px;letter-spacing:3px">${c}</b></p><p>Il est valable 10 minutes. Si ce n'est pas toi, ignore ce mail.</p>`);
+    return sent?send(200,{}):send(502,{error:"Impossible d'envoyer le code, réessaie plus tard"});
+  }
+  if(path==='email/confirm'){
+    const c=user.emailChange,code=String(b.code||'').replace(/\s/g,'');
+    if(!c||c.exp<Date.now())return send(400,{error:'Code expiré : recommence le changement d\'adresse'});
+    if(!crypto.timingSafeEqual(Buffer.from(sign('e'+user.id+c.email+code)),Buffer.from(c.h))){c.tries++;if(c.tries>=5)delete user.emailChange;await wr('users',users);return send(400,{error:'Code incorrect'})}
+    if(users.some(u=>u.email===c.email&&u.id!==user.id))return send(409,{error:'Cette adresse est déjà utilisée'});
+    user.email=c.email;delete user.emailChange;await wr('users',users);
+    if(stripe&&user.stripeId){try{await stripe.customers.update(user.stripeId,{email:user.email})}catch(e){console.error('Stripe email',e.message)}}
+    return send(200,pub(user));
+  }
+
+  /* ===== Mobile / SMS ===== */
+  if(path==='phone/send'){
+    if(!smsOn)return send(503,{error:"Les SMS ne sont pas encore activés sur la boutique"});
+    const num=b.phone?normPhone(b.phone):(user.phone&&!user.phone.verified?user.phone.num:'');
+    if(!num)return send(400,{error:'Numéro de mobile invalide (ex. 06 12 34 56 78 ou +33 6 12 34 56 78)'});
+    const now=Date.now(),sends=(user.phoneSends||[]).filter(t=>t>now-864e5);
+    if(sends.length&&sends[sends.length-1]>now-3e4)return send(429,{error:'Attends 30 secondes avant de redemander un code'});
+    if(sends.length>=5)return send(429,{error:"Trop de SMS envoyés aujourd'hui : réessaie demain"});
+    const c=String(crypto.randomInt(0,1e6)).padStart(6,'0');
+    user.phone={num,verified:false,opt:false};
+    user.phoneCode={num,h:sign('p'+user.id+num+c),exp:now+6e5,tries:0};
+    sends.push(now);user.phoneSends=sends;await wr('users',users);
+    const sent=await sms(num,`DidjoTheSHOP : ton code de confirmation est ${c}. Il est valable 10 minutes.`);
+    return sent?send(200,{}):send(502,{error:"Impossible d'envoyer le SMS : vérifie le numéro et réessaie"});
+  }
+  if(path==='phone/verify'){
+    const c=user.phoneCode,code=String(b.code||'').replace(/\s/g,'');
+    if(!c||c.exp<Date.now())return send(400,{error:'Code expiré : demande un nouveau code'});
+    if(!crypto.timingSafeEqual(Buffer.from(sign('p'+user.id+c.num+code)),Buffer.from(c.h))){c.tries++;if(c.tries>=5)delete user.phoneCode;await wr('users',users);return send(400,{error:'Code incorrect'})}
+    user.phone={num:c.num,verified:true,opt:true};delete user.phoneCode;await wr('users',users);
+    return send(200,pub(user));
+  }
+  if(path==='phone/opt'){
+    if(!user.phone||!user.phone.verified)return send(400,{error:"Confirme d'abord ton numéro de mobile"});
+    user.phone.opt=!!b.on;await wr('users',users);return send(200,pub(user));
+  }
+  if(path==='phone/remove'){delete user.phone;delete user.phoneCode;await wr('users',users);return send(200,pub(user))}
+
   if(path==='totp/setup'){
     if(user.totp)return send(400,{error:"L'application d'authentification est déjà activée"});
     const secret=b32enc(crypto.randomBytes(20));user.totpTmp=secret;await wr('users',users);
@@ -176,7 +271,7 @@ async function main(req,res){
     if(o.paid)return send(200,{paid:true});
     if(path==='pay')return send(200,{url:await checkout(o,orders)});
     const s=o.sessionId?await stripe.checkout.sessions.retrieve(o.sessionId):null;
-    if(s&&s.payment_status==='paid'&&s.client_reference_id===o.id){o.paid=true;o.paidAmount=s.amount_total;await wr('orders',orders);await mail(user.email,`Paiement reçu pour la commande ${o.id}`,`<p>Merci ! Le paiement pour la commande <b>${o.id}</b> est bien reçu.</p>`);return send(200,{paid:true})}
+    if(s&&s.payment_status==='paid'&&s.client_reference_id===o.id){o.paid=true;o.paidAmount=s.amount_total;await wr('orders',orders);await mail(user.email,`Paiement reçu pour la commande ${o.id}`,`<p>Merci ! Le paiement pour la commande <b>${o.id}</b> est bien reçu.</p>`);if(user.phone&&user.phone.verified&&user.phone.opt)await sms(user.phone.num,`DidjoTheSHOP : paiement reçu pour la commande ${o.id}. Merci !`);return send(200,{paid:true})}
     return send(200,{paid:false});
   }
   if(path==='admin/maintenance'){
@@ -217,10 +312,11 @@ async function main(req,res){
   if(path==='admin/order'){
     const orders=await rd('orders',[]),o=orders.find(x=>x.id===b.id);if(!o)return send(404,{error:'Commande introuvable'});
     const changed=o.status!==b.status||o.tracking!==b.tracking;o.status=b.status;o.tracking=String(b.tracking||'').slice(0,80);o.archived=o.status==='Livré';await wr('orders',orders);
+    const ou=users.find(x=>x.id===o.userId);
+    if(changed&&ou&&ou.phone&&ou.phone.verified&&ou.phone.opt&&['Expédié','En cours de livraison','Livré'].includes(o.status))await sms(ou.phone.num,`DidjoTheSHOP : ta commande ${o.id} est maintenant : ${o.status}.`+(o.tracking?` Suivi : ${o.tracking}`:''));
     if(changed&&['Expédié','En cours de livraison','Livré'].includes(o.status))await mail(o.email,`Commande ${o.id} : ${o.status}`,`<p>Ta commande <b>${o.id}</b> est maintenant : <b>${esc(o.status)}</b>.</p>${o.tracking?`<p>Code de suivi : <b>${esc(o.tracking)}</b></p>`:''}`);
     return send(200,{});
   }
   if(path==='admin/order-delete'){const orders=await rd('orders',[]),o=orders.find(x=>x.id===b.id);if(!o||!o.archived)return send(400,{error:'Seules les commandes livrées (archivées) peuvent être supprimées'});await wr('orders',orders.filter(x=>x.id!==b.id));return send(200,{})}
   send(404,{error:'Introuvable'});
 }
-      
