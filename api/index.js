@@ -1,6 +1,7 @@
 import {put,head} from '@vercel/blob';
 import crypto from 'node:crypto';
 import Stripe from 'stripe';
+import {markPaid,invoicePdf} from './_lib.js';
 const E=process.env,P=`db-${E.DB_SECRET}/`;
 const stripe=E.STRIPE_SECRET_KEY?new Stripe(E.STRIPE_SECRET_KEY):null;
 const rd=async(n,d)=>{try{const b=await head(P+n+'.json');return await(await fetch(b.url+'?t='+Date.now(),{cache:'no-store'})).json()}catch{return d}};
@@ -9,7 +10,7 @@ const sign=s=>crypto.createHmac('sha256',E.SESSION_SECRET).update(s).digest('bas
 const hash=(pw,salt=crypto.randomBytes(16).toString('hex'))=>salt+':'+crypto.scryptSync(pw,salt,32).toString('hex');
 const ok=(pw,h)=>{const a=Buffer.from(hash(pw,h.split(':')[0])),b=Buffer.from(h);return a.length===b.length&&crypto.timingSafeEqual(a,b)};
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const mail=(to,subject,html)=>fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:'Bearer '+E.RESEND_API_KEY,'Content-Type':'application/json'},body:JSON.stringify({from:E.MAIL_FROM,reply_to:E.MAIL_REPLY_TO,to,subject,html})}).then(async r=>{if(!r.ok)console.error('Resend',r.status,await r.text());return r.ok}).catch(e=>{console.error('Resend',e);return false});
+const mail=(to,subject,html,extra={})=>fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:'Bearer '+E.RESEND_API_KEY,'Content-Type':'application/json'},body:JSON.stringify({from:E.MAIL_FROM,reply_to:E.MAIL_REPLY_TO,to,subject,html,...extra})}).then(async r=>{if(!r.ok)console.error('Resend',r.status,await r.text());return r.ok}).catch(e=>{console.error('Resend',e);return false});
 const uid=()=>crypto.randomBytes(6).toString('hex');
 
 /* ===== Mails de maintenance ===== */
@@ -29,15 +30,21 @@ Nous vous souhaitons une excellente expérience sur DidjoTheSHOP.
 Cordialement,
 L'équipe DidjoTheSHOP
 📧 contact@teamdtk.fr`};
-const mailAll=async(to,subject,text)=>{
-  const html='<div style="font-family:Arial,sans-serif;font-size:16px;line-height:1.5;color:#142033">'+text.split('\n').filter(l=>l.trim()).map(l=>`<p style="margin:0 0 12px">${esc(l)}</p>`).join('')+'</div>';
+const unsubUrl=(o,u)=>o+'/api/unsubscribe?u='+u.id+'&t='+sign('u'+u.id);
+const footer=(o,u)=>u?`<hr style="border:0;border-top:1px solid #e5e7eb;margin:24px 0 12px"><p style="font-size:12px;color:#6b7280">Tu reçois ce mail car tu as un compte DidjoTheSHOP. <a href="${unsubUrl(o,u)}">Se désabonner</a></p>`:'';
+const batchSend=async items=>{
   let sent=0;
-  for(let i=0;i<to.length;i+=100){
-    const r=await fetch('https://api.resend.com/emails/batch',{method:'POST',headers:{Authorization:'Bearer '+E.RESEND_API_KEY,'Content-Type':'application/json'},body:JSON.stringify(to.slice(i,i+100).map(e=>({from:E.MAIL_FROM,reply_to:E.MAIL_REPLY_TO,to:[e],subject,html})))});
-    if(r.ok)sent+=Math.min(100,to.length-i);else console.error('Resend batch',r.status,await r.text());
-    if(i+100<to.length)await new Promise(x=>setTimeout(x,600));
+  for(let i=0;i<items.length;i+=100){
+    const chunk=items.slice(i,i+100).map(x=>({from:E.MAIL_FROM,reply_to:E.MAIL_REPLY_TO,to:[x.to],subject:x.subject,html:x.html,...(x.url?{headers:{'List-Unsubscribe':`<${x.url}>`,'List-Unsubscribe-Post':'List-Unsubscribe=One-Click'}}:{})}));
+    const r=await fetch('https://api.resend.com/emails/batch',{method:'POST',headers:{Authorization:'Bearer '+E.RESEND_API_KEY,'Content-Type':'application/json'},body:JSON.stringify(chunk)});
+    if(r.ok)sent+=chunk.length;else console.error('Resend batch',r.status,await r.text());
+    if(i+100<items.length)await new Promise(x=>setTimeout(x,600));
   }
   return sent;
+};
+const mailAll=(recips,origin,subject,text)=>{
+  const body=text.split('\n').filter(l=>l.trim()).map(l=>`<p style="margin:0 0 12px">${esc(l)}</p>`).join('');
+  return batchSend(recips.map(u=>({to:u.email,url:unsubUrl(origin,u),subject,html:'<div style="font-family:Arial,sans-serif;font-size:16px;line-height:1.5;color:#142033">'+body+footer(origin,u)+'</div>'})));
 };
 
 /* ===== Application d'authentification (TOTP) ===== */
@@ -47,6 +54,7 @@ const b32dec=s=>{let bits=0,val=0;const out=[];for(const c of String(s).replace(
 const hotp=(secret,step)=>{const m=Buffer.alloc(8);m.writeBigUInt64BE(BigInt(step));const h=crypto.createHmac('sha1',b32dec(secret)).update(m).digest();const o=h[19]&15;const n=((h[o]&127)<<24)|(h[o+1]<<16)|(h[o+2]<<8)|h[o+3];return String(n%1000000).padStart(6,'0')};
 const totpCheck=(secret,code,last=0)=>{if(!/^\d{6}$/.test(code))return 0;const now=Math.floor(Date.now()/3e4);for(let d=-1;d<=1;d++){const st=now+d;if(st>last&&hotp(secret,st)===code)return st}return 0};
 
+const RL=new Map();
 export default async function h(req,res){try{return await main(req,res)}catch(e){console.error(e);return res.status(500).json({error:'Erreur serveur : '+e.message})}}
 async function main(req,res){
   const path=new URL(req.url,'http://x').pathname.replace(/^\/api\//,'').replace(/\/$/,'');
@@ -76,6 +84,17 @@ async function main(req,res){
     o.sessionId=s.id;await wr('orders',orders);return s.url;
   };
 
+  /* ===== Désabonnement en un clic (lien dans les mails) ===== */
+  if(path==='unsubscribe'){
+    const q=new URL(req.url,'http://x').searchParams,uid0=String(q.get('u')||''),u=users.find(x=>x.id===uid0);
+    const t=String(q.get('t')||''),g=sign('u'+uid0);
+    const good=!!u&&t.length===g.length&&crypto.timingSafeEqual(Buffer.from(t),Buffer.from(g));
+    if(good&&!u.unsubscribed){u.unsubscribed=true;await wr('users',users)}
+    if(req.method==='POST')return send(good?200:400,{ok:good});
+    res.setHeader('Content-Type','text/html; charset=utf-8');
+    return res.status(good?200:400).send(`<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Désabonnement</title></head><body style="font-family:Arial,sans-serif;background:#f4f6fb;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0"><div style="background:#fff;border-radius:18px;padding:32px;max-width:420px;text-align:center;box-shadow:0 6px 20px rgba(15,23,42,.08)"><h2>${good?'Tu es désabonné ✅':'Lien invalide'}</h2><p style="color:#4b5563">${good?'Tu ne recevras plus nos e-mails d\'information. Tu recevras toujours les mails liés à tes commandes et à ta connexion. Tu peux te réabonner depuis ton compte.':'Ce lien de désabonnement n\'est pas valide.'}</p><p><a href="/" style="color:#4f46e5;font-weight:bold">Retour à la boutique</a></p></div></body></html>`);
+  }
+
   /* ===== Mode maintenance ===== */
   const MT=await rd('maintenance',{on:false});
   if(path==='maintenance')return send(200,{on:!!MT.on});
@@ -87,7 +106,19 @@ async function main(req,res){
   if(path.startsWith('admin/')&&!admin)return send(403,{error:'Accès refusé'});
   if(path==='products')return send(200,{products:await rd('products',[]),shipping:(await rd('settings',{shipping:0})).shipping});
   /* ===== Contact : liste publique des employés (nom + email uniquement) ===== */
-  if(path==='employees')return send(200,users.filter(u=>u.employee&&!u.banned).map(u=>({name:u.name,email:u.email})));
+  if(path==='employees')return send(200,users.filter(u=>u.employee&&!u.banned).map(u=>({id:u.id,name:u.name})));
+  if(path==='contact'&&req.method==='POST'){
+    if(b.website)return send(200,{ok:true});
+    const name=String(b.name||'').trim().slice(0,80),em=String(b.email||'').trim().toLowerCase().slice(0,120),msg=String(b.message||'').trim().slice(0,2000);
+    const target=users.find(u=>u.id===b.to&&u.employee&&!u.banned);
+    if(!target)return send(400,{error:'Choisis un membre de l\'équipe'});
+    if(!name||!/^\S+@\S+\.\S+$/.test(em)||msg.length<10)return send(400,{error:'Nom, e-mail valide et message (10 caractères minimum) requis'});
+    const ip=String(req.headers['x-forwarded-for']||'').split(',')[0].trim()||'?',now=Date.now();
+    if(now-(RL.get(ip)||0)<6e4)return send(429,{error:'Patiente une minute avant d\'envoyer un autre message'});
+    RL.set(ip,now);
+    const sent=await mail(target.email,`Message de ${name} via DidjoTheSHOP`,`<p><b>${esc(name)}</b> (${esc(em)}) t'a écrit via la page Contact :</p><blockquote style="border-left:3px solid #4f46e5;margin:12px 0;padding:4px 12px;white-space:pre-wrap">${esc(msg)}</blockquote><p>Réponds directement à ce mail pour lui répondre.</p>`,{reply_to:em});
+    return sent?send(200,{ok:true}):send(502,{error:'Envoi impossible pour le moment, réessaie plus tard'});
+  }
   if(path==='me')return send(200,user?pub(user):null);
   if(path==='logout'){login('');return send(200,{})}
   if(path==='register'){
@@ -126,6 +157,24 @@ async function main(req,res){
     if(!crypto.timingSafeEqual(Buffer.from(g),Buffer.from(u.code.h))){u.code.tries++;if(u.code.tries>=5)delete u.code;await wr('users',users);return send(400,{error:'Code incorrect'})}
     delete u.code;delete u.pend;u.verified=true;await wr('users',users);start(u);return send(200,pub(u));
   }
+  if(path==='forgot'){
+    const em=String(b.email||'').trim().toLowerCase(),u=users.find(x=>x.email===em&&!x.banned);
+    if(u&&em!==(E.ADMIN_EMAIL||'').toLowerCase()&&!(u.reset&&u.reset.sent>Date.now()-6e4)){
+      const t=crypto.randomBytes(24).toString('hex');
+      u.reset={h:sign('r'+u.id+t),exp:Date.now()+36e5,tries:0,sent:Date.now()};await wr('users',users);
+      await mail(u.email,'Réinitialise ton mot de passe DidjoTheSHOP',`<p>Clique ici pour choisir un nouveau mot de passe (lien valable 1 heure) :</p><p><a href="${origin}/?reset=${encodeURIComponent(u.email)}&code=${t}#mdp">Choisir un nouveau mot de passe</a></p><p>Si ce n'est pas toi, ignore ce mail.</p>`);
+    }
+    return send(200,{ok:true});
+  }
+  if(path==='reset'){
+    const u=users.find(x=>x.email===String(b.email||'').trim().toLowerCase()),code=String(b.code||'');
+    if(!u||u.banned||!u.reset||u.reset.exp<Date.now())return send(400,{error:'Lien expiré : redemande un nouveau lien'});
+    if(String(b.password||'').length<8)return send(400,{error:'Mot de passe de 8 caractères minimum'});
+    const g=sign('r'+u.id+code);
+    if(g.length!==u.reset.h.length||!crypto.timingSafeEqual(Buffer.from(g),Buffer.from(u.reset.h))){u.reset.tries++;if(u.reset.tries>=5)delete u.reset;await wr('users',users);return send(400,{error:'Lien invalide'})}
+    u.hash=hash(String(b.password));delete u.reset;u.fails=0;delete u.lock;u.verified=true;await wr('users',users);
+    return send(200,{ok:true});
+  }
   if(!user)return send(401,{error:'Connecte-toi pour continuer'});
 
   /* ===== Mes informations ===== */
@@ -135,6 +184,13 @@ async function main(req,res){
     user.fails=(user.fails||0)+1;if(user.fails>=5){user.lock=Date.now()+9e5;user.fails=0}
     await wr('users',users);return 'Mot de passe incorrect';
   };
+  if(path==='account/delete'){
+    if(admin)return send(400,{error:'Le compte administrateur ne peut pas être supprimé ici'});
+    const er=await pwCheck(b.password);if(er)return send(401,{error:er});
+    if(stripe&&user.stripeId){try{await stripe.customers.del(user.stripeId)}catch(e){console.error('Stripe del',e.message)}}
+    await wr('users',users.filter(x=>x.id!==user.id));login('');
+    return send(200,{});
+  }
   if(path==='profile'){
     const name=String(b.name||'').trim().slice(0,60);
     if(!name)return send(400,{error:'Le nom est requis'});
@@ -192,9 +248,18 @@ async function main(req,res){
     delete user.totp;delete user.pend;await wr('users',users);return send(200,pub(user));
   }
   if(path==='orders')return send(200,(await rd('orders',[])).filter(o=>o.userId===user.id&&!o.archived).reverse());
+  if(path==='invoice'){
+    const id=new URL(req.url,'http://x').searchParams.get('id');
+    const o=(await rd('orders',[])).find(x=>x.id===id&&(x.userId===user.id||admin));
+    if(!o||!o.paid||!o.invoiceNo)return send(404,{error:'Facture introuvable'});
+    const owner=users.find(x=>x.id===o.userId)||{name:'',email:o.email};
+    res.setHeader('Content-Type','application/pdf');res.setHeader('Content-Disposition',`inline; filename="facture-${o.invoiceNo}.pdf"`);
+    return res.status(200).send(invoicePdf(o,owner));
+  }
   if(path==='order'){
     const prods=await rd('products',[]),{shipping}=await rd('settings',{shipping:0});
-    const items=(b.items||[]).map(i=>{const p=prods.find(x=>x.id===i.id);return p&&{id:p.id,name:p.name,price:p.price,sub:!!p.sub,virtual:!!p.virtual,qty:Math.min(99,Math.max(1,i.qty|0))}}).filter(Boolean);
+    const items=(b.items||[]).map(i=>{const p=prods.find(x=>x.id===i.id);if(!p)return null;const vals=(p.options&&p.options.values)||[],v=vals.length?String(i.variant||''):'';if(vals.length&&!vals.includes(v))return null;return {id:p.id,variant:v,name:p.name+(v?' ('+v+')':''),price:p.price,sub:!!p.sub,virtual:!!p.virtual,qty:Math.min(99,Math.max(1,i.qty|0))}}).filter(Boolean);
+    for(const i of items){const p=prods.find(x=>x.id===i.id);if(typeof p.stock==='number'){const tot=items.filter(y=>y.id===i.id).reduce((a,y)=>a+y.qty,0);if(tot>p.stock)return send(400,{error:p.stock>0?`Stock insuffisant pour « ${p.name} » (il en reste ${p.stock})`:`« ${p.name} » est épuisé`})}}
     const hasReal=items.some(i=>!i.virtual),hasVirt=items.some(i=>i.virtual),ship=hasReal?shipping:0;
     if(!items.length||(hasReal&&String(b.address||'').trim().length<10))return send(400,{error:'Panier vide ou adresse incomplète'});
     if(hasVirt&&b.acceptVirtual!==true)return send(400,{error:'Tu dois accepter que les articles virtuels ne sont pas remboursables'});
@@ -225,7 +290,7 @@ async function main(req,res){
     if(o.paid)return send(200,{paid:true});
     if(path==='pay')return send(200,{url:await checkout(o,orders)});
     const s=o.sessionId?await stripe.checkout.sessions.retrieve(o.sessionId):null;
-    if(s&&s.payment_status==='paid'&&s.client_reference_id===o.id){o.paid=true;o.paidAmount=s.amount_total;await wr('orders',orders);await mail(user.email,`Paiement reçu pour la commande ${o.id}`,`<p>Merci ! Le paiement pour la commande <b>${o.id}</b> est bien reçu.</p>`);return send(200,{paid:true})}
+    if(s&&s.payment_status==='paid'&&s.client_reference_id===o.id){await markPaid(o.id,s.amount_total);return send(200,{paid:true})}
     return send(200,{paid:false});
   }
 
@@ -235,8 +300,8 @@ async function main(req,res){
     if(!!MT.on===on)return send(200,{on,sent:0,total:0,unchanged:true});
     await wr('maintenance',{on,at:Date.now()});
     const m=on?MAIL_START:MAIL_END;
-    const to=[...new Set(users.filter(u=>!u.banned&&!u.unsubscribed&&u.email).map(u=>u.email))];
-    const sent=await mailAll(to,m.s,m.t);
+    const seen=new Set(),to=users.filter(u=>!u.banned&&!u.unsubscribed&&u.email&&!seen.has(u.email)&&seen.add(u.email));
+    const sent=await mailAll(to,origin,m.s,m.t);
     return send(200,{on,sent,total:to.length});
   }
   if(path==='admin/mail-html'){
@@ -245,22 +310,26 @@ async function main(req,res){
     const subject=String(b.subject||'').trim().slice(0,150),body=clean(b.html);
     if(!subject||!body.replace(/<[^>]*>/g,'').trim())return send(400,{error:'Objet et message requis'});
     const one=String(b.other||'').trim().toLowerCase()||(b.to==='all'?'':String(b.to||'').trim().toLowerCase());
-    const to=one?[one]:users.filter(u=>!u.banned&&!u.unsubscribed).map(u=>u.email).slice(0,100);
-    if(!to.length||to.some(e=>!/^\S+@\S+\.\S+$/.test(e)))return send(400,{error:'Destinataire invalide'});
-    const html='<div style="font-family:Arial,sans-serif;font-size:16px;line-height:1.5;color:#142033">'+body+'</div>';
-    const r=await fetch('https://api.resend.com/emails/batch',{method:'POST',headers:{Authorization:'Bearer '+E.RESEND_API_KEY,'Content-Type':'application/json'},body:JSON.stringify(to.map(e=>({from:E.MAIL_FROM,reply_to:E.MAIL_REPLY_TO,to:[e],subject,html})))});
-    if(!r.ok)return send(502,{error:"Resend a refusé l'envoi : vérifie la clé API et le domaine"});
-    return send(200,{sent:to.length});
+    const list=one?[one]:users.filter(u=>!u.banned&&!u.unsubscribed).map(u=>u.email).slice(0,100);
+    if(!list.length||list.some(e=>!/^\S+@\S+\.\S+$/.test(e)))return send(400,{error:'Destinataire invalide'});
+    const items=list.map(e=>{const x=users.find(u=>u.email===e&&!u.banned);return {to:e,url:x&&unsubUrl(origin,x),subject,html:'<div style="font-family:Arial,sans-serif;font-size:16px;line-height:1.5;color:#142033">'+body+footer(origin,x)+'</div>'}});
+    const sent=await batchSend(items);
+    if(!sent)return send(502,{error:"Resend a refusé l'envoi : vérifie la clé API et le domaine"});
+    return send(200,{sent});
   }
   if(path==='admin/data')return send(200,{products:await rd('products',[]),orders:(await rd('orders',[])).reverse().map(o=>({...o,name:users.find(u=>u.id===o.userId)?.name||''})),users:users.map(u=>({id:u.id,name:u.name,email:u.email,banned:u.banned,employee:!!u.employee,unsubscribed:!!u.unsubscribed})),shipping:(await rd('settings',{shipping:0})).shipping});
 
   if(path==='admin/user-create'){
     const email=String(b.email||'').trim().toLowerCase(),name=String(b.name||'').trim().slice(0,60);
-    if(!name||!/^\S+@\S+\.\S+$/.test(email)||String(b.password||'').length<8)return send(400,{error:'Nom, email valide et mot de passe de 8 caractères minimum requis'});
-    if(users.some(u=>u.email===email))return send(409,{error:'Un compte existe déjà avec cet email'});
-    const u={id:uid(),name,email,hash:hash(b.password),banned:false,created:Date.now(),employee:true,verified:true};
+    if(!name||!/^\S+@\S+\.\S+$/.test(email))return send(400,{error:'Nom et e-mail valide requis'});
+    if(users.some(u=>u.email===email)||email===(E.ADMIN_EMAIL||'').toLowerCase())return send(409,{error:'Un compte existe déjà avec cet email'});
+    const t=crypto.randomBytes(24).toString('hex');
+    const u={id:uid(),name,email,hash:hash(crypto.randomBytes(24).toString('hex')),banned:false,created:Date.now(),employee:true,verified:true};
+    u.reset={h:sign('r'+u.id+t),exp:Date.now()+6048e5,tries:0,sent:Date.now()};
+    const sent=await mail(email,'Ton compte employé Team DTK – DidjoTheSHOP',`<p>Bonjour ${esc(name)}, un compte employé Team DTK vient d'être créé pour toi sur DidjoTheSHOP.</p><p><a href="${origin}/?reset=${encodeURIComponent(email)}&code=${t}#mdp">Choisir mon mot de passe</a> (lien valable 7 jours)</p>`);
+    if(!sent)return send(502,{error:"Impossible d'envoyer l'invitation : vérifie la configuration Resend"});
     users.push(u);await wr('users',users);
-    return send(200,{name:u.name,email:u.email,password:b.password});
+    return send(200,{name,email,invited:true});
   }
   if(path==='admin/user-update'){
     const u=users.find(x=>x.id===b.id);
@@ -271,9 +340,14 @@ async function main(req,res){
   if(path==='admin/product'){
     let ps=await rd('products',[]);
     if(b.del)ps=ps.filter(p=>p.id!==b.id);
-    else{const old=ps.find(x=>x.id===b.id);
-      const p={id:b.id||uid(),name:String(b.name||'').slice(0,80),desc:String(b.desc||'').slice(0,400),price:Math.round(Number(b.price)*100)||0,image:String(b.image||''),sub:!!b.sub,virtual:b.virtual===undefined?!!(old&&old.virtual):!!b.virtual};
-      if(!p.name||p.price<=0)return send(400,{error:'Nom et prix requis'});
+    else{
+      const old=ps.find(x=>x.id===b.id)||{},has=k=>b[k]!==undefined;
+      const images=has('images')?(Array.isArray(b.images)?b.images:[]).map(String).filter(Boolean).slice(0,8):(old.images||(old.image?[old.image]:[]));
+      const vals=has('options')?String(b.options||'').split(',').map(x=>x.trim().slice(0,30)).filter(Boolean).slice(0,20):((old.options&&old.options.values)||[]);
+      const lab=has('optLabel')?(String(b.optLabel||'').trim().slice(0,30)||'Option'):((old.options&&old.options.label)||'Option');
+      const sr=has('stock')?b.stock:old.stock;
+      const p={id:b.id||uid(),name:has('name')?String(b.name||'').slice(0,80):old.name,desc:has('desc')?String(b.desc||'').slice(0,400):(old.desc||''),price:has('price')?(Math.round(Number(b.price)*100)||0):old.price,image:images[0]||'',images,cat:has('cat')?String(b.cat||'').trim().slice(0,40):(old.cat||''),options:{label:lab,values:vals},stock:(sr===''||sr===null||sr===undefined)?null:Math.max(0,Math.floor(Number(sr))||0),sub:has('sub')?!!b.sub:!!old.sub,virtual:has('virtual')?!!b.virtual:!!old.virtual};
+      if(!p.name||!(p.price>0))return send(400,{error:'Nom et prix requis'});
       const i=ps.findIndex(x=>x.id===p.id);i<0?ps.push(p):ps[i]=p}
     await wr('products',ps);return send(200,{});
   }
