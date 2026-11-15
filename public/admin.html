@@ -49,4 +49,4 @@ window.ship=()=>run(()=>api('admin/shipping',{shipping:$('#sh').value}),'Frais e
 window.setMaint=async on=>{if(!confirm((on?'Démarrer':'Terminer')+' la maintenance ? Un mail sera envoyé à TOUS les clients non désabonnés.'))return;$('#m').innerHTML='Envoi des mails en cours…';try{const r=await api('admin/maintenance',{on});await load();$('#m').innerHTML=`<span class="ok">${on?'Maintenance démarrée':'Maintenance terminée'} : ${r.sent||0} mail(s) envoyé(s) sur ${r.total||0}.</span>`}catch(e){$('#m').innerHTML=`<span class="err">${esc(e.message)}</span>`}};
 window.up=async el=>{const f=el.files[0];if(!f)return;const d=await new Promise(r=>{const x=new FileReader;x.onload=()=>r(x.result.split(',')[1]);x.readAsDataURL(f)});try{img=(await api('admin/upload',{name:f.name,type:f.type,data:d})).url;$('#pv').src=img;$('#pv').style.display='block';$('#m').innerHTML='<span class="ok">Image envoyée</span>'}catch(e){$('#m').innerHTML=`<span class="err">${esc(e.message)}</span>`}};
 load();
-</script></body></html>
+</script><script src="/logo.js"></script><script src="/fx.js"></script></body></html>
