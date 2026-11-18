@@ -1,0 +1,20 @@
+<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Article · DidjoTheSHOP</title>
+<script src="/logo.js"></script><link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;800&display=swap" rel="stylesheet"><link rel="stylesheet" href="/style.css">
+<style>.pg{display:grid;grid-template-columns:1.1fr 1fr;gap:34px;align-items:start;perspective:1000px}.big{width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:24px;box-shadow:0 30px 60px -20px rgba(79,70,229,.4);transition:transform .15s}.th{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap}.th img{width:74px;height:74px;object-fit:cover;border-radius:14px;cursor:pointer;border:2px solid transparent;transition:transform .3s var(--spring),border-color .2s}.th img.on,.th img:hover{border-color:var(--acc);transform:translateY(-3px)}@media(max-width:760px){.pg{grid-template-columns:1fr}}</style></head><body>
+<header><b class="brand"><img data-logo alt="">DidjoTheSHOP</b><a href="/">Boutique</a><a href="/contact.html">Contact</a><a href="/seller.html">Vendre</a><a href="/#panier">Panier</a><a href="/#compte">Compte</a></header>
+<main id="v"><p class="mut">Chargement…</p></main>
+<footer><b>DidjoTheSHOP</b><br>contact@teamdtk.fr</footer>
+<script>
+document.querySelectorAll('img[data-logo]').forEach(i=>i.src=window.DTK_LOGO);
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])),eur=c=>(c/100).toFixed(2).replace('.',',')+' €';let P;
+(async()=>{const v=document.getElementById('v');try{
+const id=location.pathname.split('/').pop()||new URLSearchParams(location.search).get('id');
+const r=await fetch('/api/product?id='+encodeURIComponent(id));P=await r.json();if(!r.ok)throw new Error(P.error);
+const im=P.images&&P.images.length?P.images:(P.image?[P.image]:[]);document.title=P.name+' · DidjoTheSHOP';
+v.innerHTML=`<div class="pg"><div>${im.length?`<img id="big" class="big" src="${esc(im[0])}" alt="${esc(P.name)}">`:'<div class="ph" style="border-radius:24px"></div>'}<div class="th">${im.length>1?im.map((u,i)=>`<img class="${i?'':'on'}" src="${esc(u)}" alt="" onclick="pick(this)">`).join(''):''}</div></div>
+<div><h1>${esc(P.name)}</h1>${P.seller?`<p class="mut">Vendu par <b>${esc(P.seller)}</b></p>`:''}<p><span class="price">${eur(P.price)}${P.sub?' / mois':''}</span></p><p style="white-space:pre-line">${esc(P.desc)}</p>${P.virtual?'<p class="mut">🎮 Article virtuel · non remboursable</p>':''}<p><button onclick="add()">Ajouter au panier</button></p><p id="ok" class="ok"></p><p><a href="/">← Retour à la boutique</a></p></div></div>`;
+const b=document.getElementById('big');if(b)b.parentNode.addEventListener('pointermove',e=>{const q=b.getBoundingClientRect();b.style.transform=`rotateY(${((e.clientX-q.left)/q.width-.5)*10}deg) rotateX(${(.5-(e.clientY-q.top)/q.height)*10}deg)`}),b.parentNode.addEventListener('pointerleave',()=>b.style.transform='');
+}catch(e){v.innerHTML='<h1>Article introuvable</h1><p><a href="/">Retour à la boutique</a></p>'}})();
+window.pick=i=>{document.getElementById('big').src=i.src;document.querySelectorAll('.th img').forEach(x=>x.classList.toggle('on',x===i))};
+window.add=()=>{let c={};try{c=JSON.parse(localStorage.cart||'{}')}catch{}c[P.id]=(c[P.id]||0)+1;try{localStorage.cart=JSON.stringify(c)}catch{}document.getElementById('ok').innerHTML='Ajouté au panier ! <a href="/#panier">Voir le panier</a>'};
+</script><script src="/fx.js"></script></body></html>
