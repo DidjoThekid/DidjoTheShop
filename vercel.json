@@ -1,1 +1,1 @@
-{"rewrites":[{"source":"/api/:p*","destination":"/api/index.js"},{"source":"/admin","destination":"/admin.html"},{"source":"/login","destination":"/login.html"},{"source":"/signup","destination":"/signup.html"}]}
+{"rewrites":[{"source":"/api/:p*","destination":"/api/index.js"},{"source":"/admin","destination":"/admin.html"},{"source":"/login","destination":"/login.html"},{"source":"/signup","destination":"/signup.html"},{"source":"/seller","destination":"/seller.html"},{"source":"/contact","destination":"/contact.html"},{"source":"/p/:id","destination":"/product.html"}]}
