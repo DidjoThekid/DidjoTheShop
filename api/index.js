@@ -41,7 +41,7 @@ async function main(req,res){
   if(ck){const[p,g]=ck.split('.');if(g&&g===sign(p)){try{const t=JSON.parse(Buffer.from(p,'base64url'));if(t.exp>Date.now())user=users.find(u=>u.id===t.id&&!u.banned)||null}catch{}}}
   const admin=!!user&&user.email===(E.ADMIN_EMAIL||'').toLowerCase();
   const start=u=>{const p=Buffer.from(JSON.stringify({id:u.id,exp:Date.now()+2592e6})).toString('base64url');login(p+'.'+sign(p))};
-  const pub=u=>({name:u.name,email:u.email,admin:u.email===(E.ADMIN_EMAIL||'').toLowerCase(),totp:!!u.totp,address:u.address||'',employee:!!u.employee,unsubscribed:!!u.unsubscribed});
+  const pub=u=>({name:u.name,email:u.email,admin:u.email===(E.ADMIN_EMAIL||'').toLowerCase(),totp:!!u.totp,address:u.address||'',employee:!!u.employee,unsubscribed:!!u.unsubscribed,seller:u.seller?{status:u.seller.status,shop:u.seller.shop}:null});
   const issue=async u=>{
     if(u.code&&u.code.sent>Date.now()-3e4)return send(429,{error:'Attends 30 secondes avant de redemander un code'});
     const c=String(crypto.randomInt(0,1e6)).padStart(6,'0');
@@ -59,7 +59,14 @@ async function main(req,res){
     const s=await stripe.checkout.sessions.create(params);
     o.sessionId=s.id;await wr('orders',orders);return s.url;
   };
-
+  const payout=async o=>{
+    const pct=Number(E.COMMISSION_PCT||10),by={};
+    for(const i of o.items)if(i.sellerId&&!i.sub)by[i.sellerId]=(by[i.sellerId]||0)+i.price*i.qty;
+    const s=await stripe.checkout.sessions.retrieve(o.sessionId),pi=await stripe.paymentIntents.retrieve(s.payment_intent);let all=true;
+    for(const[sid,amt]of Object.entries(by)){const u=users.find(x=>x.id===sid),net=Math.floor(amt*(100-pct)/100);if(!u||!u.seller||!u.seller.stripeId||net<=0)continue;
+      try{await stripe.transfers.create({amount:net,currency:'eur',destination:u.seller.stripeId,transfer_group:o.id,source_transaction:pi.latest_charge,metadata:{orderId:o.id,sellerId:sid}},{idempotencyKey:'tr-'+o.id+'-'+sid})}catch(e){all=false;console.error('Transfert',e.message)}}
+    if(all)o.transferred=true;
+  };
   const MT=await rd('maintenance',{on:false});
   if(path==='maintenance')return send(200,{on:!!MT.on});
   if(MT.on&&!admin&&!['me','logout','verify'].includes(path)){
@@ -106,6 +113,14 @@ async function main(req,res){
     const g=sign('c'+u.id+code);
     if(!crypto.timingSafeEqual(Buffer.from(g),Buffer.from(u.code.h))){u.code.tries++;if(u.code.tries>=5)delete u.code;await wr('users',users);return send(400,{error:'Code incorrect'})}
     delete u.code;delete u.pend;u.verified=true;await wr('users',users);start(u);return send(200,pub(u));
+  }
+    if(path==='employees')return send(200,users.filter(u=>u.employee&&!u.banned).map(u=>({name:u.name,email:u.email})));
+  if(path==='product'){const id=new URL(req.url,'http://x').searchParams.get('id');const p=(await rd('products',[])).find(x=>x.id===id);if(!p)return send(404,{error:'Article introuvable'});const s=p.sellerId&&users.find(u=>u.id===p.sellerId);return send(200,{...p,seller:s&&s.seller?s.seller.shop:''})}
+  if(path==='set-password'){
+    const t=String(b.token||''),u=users.find(x=>x.invite&&x.invite.h===sign('i'+t));
+    if(!t||!u||u.invite.exp<Date.now())return send(400,{error:"Lien invalide ou expiré : demande un nouveau mail à l'administrateur"});
+    if(String(b.password||'').length<8)return send(400,{error:'8 caractères minimum'});
+    u.hash=hash(String(b.password));delete u.invite;u.verified=true;await wr('users',users);return send(200,{});
   }
   if(!user)return send(401,{error:'Connecte-toi pour continuer'});
   
@@ -171,7 +186,7 @@ async function main(req,res){
   if(path==='orders')return send(200,(await rd('orders',[])).filter(o=>o.userId===user.id&&!o.archived).reverse());
   if(path==='order'){
     const prods=await rd('products',[]),{shipping}=await rd('settings',{shipping:0});
-    const items=(b.items||[]).map(i=>{const p=prods.find(x=>x.id===i.id);return p&&{id:p.id,name:p.name,price:p.price,sub:!!p.sub,virtual:!!p.virtual,qty:Math.min(99,Math.max(1,i.qty|0))}}).filter(Boolean);
+    const items=(b.items||[]).map(i=>{const p=prods.find(x=>x.id===i.id);return p&&{id:p.id,name:p.name,price:p.price,sub:!!p.sub,virtual:!!p.virtual,sellerId:p.sellerId||'',qty:Math.min(99,Math.max(1,i.qty|0))}}).filter(Boolean);
     const hasReal=items.some(i=>!i.virtual),hasVirt=items.some(i=>i.virtual),ship=hasReal?shipping:0;
     if(!items.length||(hasReal&&String(b.address||'').trim().length<10))return send(400,{error:'Panier vide ou adresse incomplète'});
     if(hasVirt&&b.acceptVirtual!==true)return send(400,{error:'Tu dois accepter que les articles virtuels ne sont pas remboursables'});
@@ -199,10 +214,10 @@ async function main(req,res){
     if(!stripe)return send(500,{error:'STRIPE_SECRET_KEY manquant dans les variables Vercel'});
     let orders,o;for(let i=0;i<4;i++){orders=await rd('orders',[]);o=orders.find(x=>x.id===b.orderId&&x.userId===user.id);if(o)break;await new Promise(r=>setTimeout(r,1200))}
     if(!o)return send(404,{error:'Commande introuvable'});
-    if(o.paid)return send(200,{paid:true});
+    if(o.paid){if(!o.transferred&&o.sessionId){await payout(o).catch(e=>console.error('Payout',e.message));await wr('orders',orders)}return send(200,{paid:true})}
     if(path==='pay')return send(200,{url:await checkout(o,orders)});
     const s=o.sessionId?await stripe.checkout.sessions.retrieve(o.sessionId):null;
-    if(s&&s.payment_status==='paid'&&s.client_reference_id===o.id){o.paid=true;o.paidAmount=s.amount_total;await wr('orders',orders);await mail(user.email,`Paiement reçu pour la commande ${o.id}`,`<p>Merci ! Le paiement pour la commande <b>${o.id}</b> est bien reçu.</p>`);return send(200,{paid:true})}
+    if(s&&s.payment_status==='paid'&&s.client_reference_id===o.id){o.paid=true;o.paidAmount=s.amount_total;await payout(o).catch(e=>console.error('Payout',e.message));await wr('orders',orders);await mail(user.email,`Paiement reçu pour la commande ${o.id}`,`<p>Merci ! Le paiement pour la commande <b>${o.id}</b> est bien reçu.</p>`);return send(200,{paid:true})}
     return send(200,{paid:false});
   }
   
@@ -229,15 +244,17 @@ async function main(req,res){
     if(!r.ok)return send(502,{error:"Resend a refusé l'envoi : vérifie la clé API et le domaine"});
     return send(200,{sent:to.length});
   }
-  if(path==='admin/data')return send(200,{products:await rd('products',[]),orders:(await rd('orders',[])).reverse().map(o=>({...o,name:users.find(u=>u.id===o.userId)?.name||''})),users:users.map(u=>({id:u.id,name:u.name,email:u.email,banned:u.banned,employee:!!u.employee,unsubscribed:!!u.unsubscribed})),shipping:(await rd('settings',{shipping:0})).shipping});
+  if(path==='admin/data')return send(200,{products:await rd('products',[]),orders:(await rd('orders',[])).reverse().map(o=>({...o,name:users.find(u=>u.id===o.userId)?.name||''})),users:users.map(u=>({id:u.id,name:u.name,email:u.email,banned:u.banned,employee:!!u.employee,unsubscribed:!!u.unsubscribed,seller:u.seller?{status:u.seller.status,shop:u.seller.shop,type:u.seller.type,siret:u.seller.siret,desc:u.seller.desc}:null})),shipping:(await rd('settings',{shipping:0})).shipping});
   
   if(path==='admin/user-create'){
     const email=String(b.email||'').trim().toLowerCase(),name=String(b.name||'').trim().slice(0,60);
-    if(!name||!/^\S+@\S+\.\S+$/.test(email)||String(b.password||'').length<8)return send(400,{error:'Nom, email valide et mot de passe de 8 caractères minimum requis'});
+    if(!name||!/^\S+@\S+\.\S+$/.test(email))return send(400,{error:'Nom et email valide requis'});
     if(users.some(u=>u.email===email))return send(409,{error:'Un compte existe déjà avec cet email'});
-    const u={id:uid(),name,email,hash:hash(b.password),banned:false,created:Date.now(),employee:true,verified:true};
-    users.push(u);await wr('users',users);
-    return send(200,{name:u.name,email:u.email,password:b.password});
+    const tok=crypto.randomBytes(32).toString('base64url');
+    users.push({id:uid(),name,email,hash:hash(crypto.randomBytes(24).toString('hex')),banned:false,created:Date.now(),employee:true,verified:true,invite:{h:sign('i'+tok),exp:Date.now()+1728e5}});
+    await wr('users',users);
+    const sent=await mail(email,'Bienvenue dans la Team DTK : choisis ton mot de passe',`<p>Bonjour ${esc(name)}, un compte employé DidjoTheSHOP vient d'être créé pour toi.</p><p><a href="${origin}/set-password.html?t=${tok}">Choisir mon mot de passe</a> (lien valable 48 h)</p>`);
+    return send(200,{name,email,sent});
   }
   if(path==='admin/user-update'){
     const u=users.find(x=>x.id===b.id);
@@ -258,11 +275,22 @@ async function main(req,res){
   if(path==='admin/product'){
     let ps=await rd('products',[]);
     if(b.del)ps=ps.filter(p=>p.id!==b.id);
-    else{const old=ps.find(x=>x.id===b.id);
-      const p={id:b.id||uid(),name:String(b.name||'').slice(0,80),desc:String(b.desc||'').slice(0,400),price:Math.round(Number(b.price)*100)||0,image:String(b.image||''),sub:!!b.sub,virtual:b.virtual===undefined?!!(old&&old.virtual):!!b.virtual};
+    else{const old=ps.find(x=>x.id===b.id)||{};
+      const imgs=Array.isArray(b.images)?b.images.map(String).filter(Boolean).slice(0,10):(old.images||[]);
+      const p={...old,id:b.id||uid(),name:String(b.name||'').slice(0,80),desc:String(b.desc||'').slice(0,2000),price:Math.round(Number(b.price)*100)||0,image:imgs[0]||String(b.image||old.image||''),images:imgs,sub:!!b.sub,virtual:b.virtual===undefined?!!old.virtual:!!b.virtual};
       if(!p.name||p.price<=0)return send(400,{error:'Nom et prix requis'});
-      const i=ps.findIndex(x=>x.id===p.id);i<0?ps.push(p):ps[i]=p}
-    await wr('products',ps);return send(200,{});
+      const i=ps.findIndex(x=>x.id===p.id);i<0?ps.push(p):ps[i]=p;b.id=p.id}
+    await wr('products',ps);return send(200,{id:b.id});
+  }
+    if(path==='admin/seller'){
+    const u=users.find(x=>x.id===b.id);if(!u||!u.seller)return send(404,{error:'Demande introuvable'});
+    if(b.approve){
+      if(!stripe)return send(500,{error:'STRIPE_SECRET_KEY manquant'});
+      if(!u.seller.stripeId){const a=await stripe.accounts.create({type:'express',country:'FR',email:u.email,capabilities:{transfers:{requested:true}},business_type:u.seller.type,business_profile:{name:u.seller.shop},metadata:{userId:u.id}});u.seller.stripeId=a.id}
+      u.seller.status='approved';await wr('users',users);
+      await mail(u.email,'Ta demande vendeur est acceptée',`<p>Bienvenue ! Termine la vérification d'identité et d'entreprise (par Stripe) dans ton espace vendeur pour recevoir tes gains : <a href="${origin}/seller.html">${origin}/seller.html</a></p>`);
+    }else{u.seller.status='rejected';u.seller.reason=String(b.reason||'').slice(0,300);await wr('users',users);await mail(u.email,'Ta demande vendeur',`<p>Ta demande n'a pas été acceptée.</p><p>${esc(u.seller.reason)}</p>`)}
+    return send(200,{});
   }
   if(path==='admin/shipping'){await wr('settings',{shipping:Math.max(0,Math.round(Number(b.shipping)*100)||0)});return send(200,{})}
   if(path==='admin/upload'){const r=await put('img/'+uid()+'-'+String(b.name||'img').replace(/[^\w.-]/g,'_'),Buffer.from(b.data,'base64'),{access:'public',contentType:b.type||'image/jpeg'});return send(200,{url:r.url})}
@@ -274,11 +302,39 @@ async function main(req,res){
     return send(200,{});
   }
   if(path==='admin/order-delete'){const orders=await rd('orders',[]),o=orders.find(x=>x.id===b.id);if(!o||!o.archived)return send(400,{error:'Seules les commandes livrées (archivées) peuvent être supprimées'});await wr('orders',orders.filter(x=>x.id!==b.id));return send(200,{})}
-  
-  if(path==='employees'){
-    const emps = users.filter(u=>u.employee && !u.banned).map(u=>({name:u.name, email:u.email}));
-    return send(200, emps);
+  const S=user.seller,pct=Number(E.COMMISSION_PCT||10);
+  const ready=async()=>{if(!S||!S.stripeId)return false;try{const a=await stripe.accounts.retrieve(S.stripeId);S.ready=a.capabilities?.transfers==='active'&&!!a.details_submitted;S.payouts=!!a.payouts_enabled;await wr('users',users)}catch(e){console.error(e.message)}return !!S.ready};
+  if(path==='seller/apply'){
+    if(S&&S.status!=='rejected')return send(400,{error:'Une demande existe déjà'});
+    const shop=String(b.shop||'').trim().slice(0,80),siret=String(b.siret||'').replace(/\s/g,'');
+    if(!shop||!/^\d{9}(\d{5})?$/.test(siret)||!['individual','company'].includes(b.type))return send(400,{error:'Nom de boutique, type et SIRET (9 ou 14 chiffres) requis'});
+    user.seller={status:'pending',shop,type:b.type,siret,desc:String(b.desc||'').slice(0,500),date:Date.now()};await wr('users',users);
+    await mail(E.ADMIN_EMAIL,'Nouvelle demande vendeur',`<p>${esc(shop)} (${esc(user.email)}) demande à devenir vendeur. Réponds depuis l'admin, onglet Vendeurs.</p>`);
+    return send(200,{});
   }
-
+  if(path==='seller/me'){if(S&&S.status==='approved')await ready();return send(200,{seller:S?{status:S.status,shop:S.shop,reason:S.reason||'',ready:!!S.ready}:null,pct})}
+  if(path.startsWith('seller/')&&!(S&&S.status==='approved'))return send(403,{error:"Espace réservé aux vendeurs acceptés"});
+  if(path==='seller/onboard'){const l=await stripe.accountLinks.create({account:S.stripeId,refresh_url:origin+'/seller.html',return_url:origin+'/seller.html',type:'account_onboarding'});return send(200,{url:l.url})}
+  if(path==='seller/dashboard'){const l=await stripe.accounts.createLoginLink(S.stripeId);return send(200,{url:l.url})}
+  if(path==='seller/upload'){const r=await put('img/'+uid()+'-'+String(b.name||'img').replace(/[^\w.-]/g,'_'),Buffer.from(b.data,'base64'),{access:'public',contentType:b.type||'image/jpeg'});return send(200,{url:r.url})}
+  if(path==='seller/products')return send(200,(await rd('products',[])).filter(p=>p.sellerId===user.id));
+  if(path==='seller/product'){
+    if(!await ready())return send(403,{error:"Termine d'abord la vérification Stripe pour pouvoir vendre"});
+    let ps=await rd('products',[]);const old=ps.find(x=>x.id===b.id);
+    if(b.id&&(!old||old.sellerId!==user.id))return send(403,{error:'Article introuvable'});
+    if(b.del)ps=ps.filter(p=>p.id!==b.id);
+    else{const imgs=(Array.isArray(b.images)?b.images:[]).map(String).filter(Boolean).slice(0,10);
+      const p={...(old||{}),id:old?old.id:uid(),sellerId:user.id,name:String(b.name||'').slice(0,80),desc:String(b.desc||'').slice(0,2000),price:Math.round(Number(b.price)*100)||0,image:imgs[0]||'',images:imgs,sub:false,virtual:!!b.virtual};
+      if(!p.name||p.price<=0)return send(400,{error:'Nom et prix requis'});
+      old?ps[ps.indexOf(old)]=p:ps.push(p)}
+    await wr('products',ps);return send(200,{});
+  }
+  if(path==='seller/orders')return send(200,(await rd('orders',[])).filter(o=>o.paid&&o.items.some(i=>i.sellerId===user.id)).reverse().map(o=>{const it=o.items.filter(i=>i.sellerId===user.id);return{id:o.id,date:o.date,address:o.address,items:it.map(i=>i.name+' ×'+i.qty),net:Math.floor(it.reduce((a,i)=>a+i.price*i.qty,0)*(100-pct)/100),tracking:(o.sellerShip||{})[user.id]||'',paidOut:!!o.transferred}}));
+  if(path==='seller/order'){
+    const orders=await rd('orders',[]),o=orders.find(x=>x.id===b.id&&x.paid&&x.items.some(i=>i.sellerId===user.id));if(!o)return send(404,{error:'Commande introuvable'});
+    const t=String(b.tracking||'').slice(0,80);o.sellerShip={...(o.sellerShip||{}),[user.id]:t};await wr('orders',orders);
+    if(t)await mail(o.email,`Commande ${o.id} : expédiée par ${S.shop}`,`<p>Ton colis de <b>${esc(S.shop)}</b> est expédié. Code de suivi : <b>${esc(t)}</b></p>`);
+    return send(200,{});
+  }
   send(404,{error:'Introuvable'});
 }
