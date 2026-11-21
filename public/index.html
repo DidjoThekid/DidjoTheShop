@@ -4,7 +4,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" defer></script>
 </head><body>
 <header><b class="brand"><img data-logo alt="">DidjoTheSHOP</b><a href="/">Boutique</a><a href="/contact.html">Contact</a><a href="/seller.html">Vendre</a><a href="#panier">Panier (<span id="n">0</span>)</a><a href="#compte">Compte</a></header><main id="v"></main>
-<footer><b>DidjoTheSHOP</b><br>Paiement sécurisé par Stripe · Livraison suivie depuis ton compte</footer>
+<footer><b>DidjoTheSHOP</b><br><a href="mailto:contact@teamdtk.fr">contact@teamdtk.fr</a><br><a href="/legal.html#mentions">Mentions légales</a> · <a href="/legal.html#cgv">CGV</a> · <a href="/legal.html#retours">Retours et rétractation</a> · <a href="/legal.html#confidentialite">Confidentialité</a> · <a href="/legal.html#cookies">Cookies</a> · <a href="/legal.html#vendeurs">Conditions vendeurs</a><br><span style="font-size:13px">Paiement sécurisé par Stripe · Livraison Colissimo suivie depuis ton compte</span></footer>
 <script>
 const LOGO=(document.querySelector('link[rel=icon]')||{}).href||'';document.querySelectorAll('img[data-logo]').forEach(i=>i.src=LOGO);
 const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])),eur=c=>(c/100).toFixed(2).replace('.',',')+' €';
