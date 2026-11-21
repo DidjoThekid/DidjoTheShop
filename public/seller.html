@@ -1,7 +1,7 @@
 <!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Espace vendeur · DidjoTheSHOP</title>
 <script src="/logo.js"></script><link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;800&display=swap" rel="stylesheet"><link rel="stylesheet" href="/style.css"></head><body>
 <header><b class="brand"><img data-logo alt="">Espace vendeur</b><a href="/">Boutique</a><a href="/#compte">Compte</a></header>
-<main id="v">Chargement…</main><footer><b>DidjoTheSHOP</b><br>contact@teamdtk.fr</footer>
+<main id="v">Chargement…</main><footer><b>DidjoTheSHOP</b><br><a href="mailto:contact@teamdtk.fr">contact@teamdtk.fr</a><br><a href="/legal.html#mentions">Mentions légales</a> · <a href="/legal.html#cgv">CGV</a> · <a href="/legal.html#retours">Retours et rétractation</a> · <a href="/legal.html#confidentialite">Confidentialité</a> · <a href="/legal.html#cookies">Cookies</a> · <a href="/legal.html#vendeurs">Conditions vendeurs</a></footer>
 <script>
 document.querySelectorAll('img[data-logo]').forEach(i=>i.src=window.DTK_LOGO);
 const $=s=>document.querySelector(s),V=h=>$('#v').innerHTML=h,esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])),eur=c=>(c/100).toFixed(2).replace('.',',')+' €';
