@@ -3,7 +3,7 @@
 <style>.pg{display:grid;grid-template-columns:1.1fr 1fr;gap:34px;align-items:start;perspective:1000px}.big{width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:24px;box-shadow:0 30px 60px -20px rgba(79,70,229,.4);transition:transform .15s}.th{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap}.th img{width:74px;height:74px;object-fit:cover;border-radius:14px;cursor:pointer;border:2px solid transparent;transition:transform .3s var(--spring),border-color .2s}.th img.on,.th img:hover{border-color:var(--acc);transform:translateY(-3px)}@media(max-width:760px){.pg{grid-template-columns:1fr}}</style></head><body>
 <header><b class="brand"><img data-logo alt="">DidjoTheSHOP</b><a href="/">Boutique</a><a href="/contact.html">Contact</a><a href="/seller.html">Vendre</a><a href="/#panier">Panier</a><a href="/#compte">Compte</a></header>
 <main id="v"><p class="mut">Chargement…</p></main>
-<footer><b>DidjoTheSHOP</b><br>contact@teamdtk.fr</footer>
+<footer><b>DidjoTheSHOP</b><br><a href="mailto:contact@teamdtk.fr">contact@teamdtk.fr</a><br><a href="/legal.html#mentions">Mentions légales</a> · <a href="/legal.html#cgv">CGV</a> · <a href="/legal.html#retours">Retours et rétractation</a> · <a href="/legal.html#confidentialite">Confidentialité</a> · <a href="/legal.html#cookies">Cookies</a> · <a href="/legal.html#vendeurs">Conditions vendeurs</a></footer>
 <script>
 document.querySelectorAll('img[data-logo]').forEach(i=>i.src=window.DTK_LOGO);
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])),eur=c=>(c/100).toFixed(2).replace('.',',')+' €';let P;
