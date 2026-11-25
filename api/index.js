@@ -12,6 +12,46 @@ const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&g
 const mail=(to,subject,html)=>fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:'Bearer '+E.RESEND_API_KEY,'Content-Type':'application/json'},body:JSON.stringify({from:E.MAIL_FROM,reply_to:E.MAIL_REPLY_TO,to,subject,html})}).then(async r=>{if(!r.ok)console.error('Resend',r.status,await r.text());return r.ok}).catch(e=>{console.error('Resend',e);return false});
 const uid=()=>crypto.randomBytes(6).toString('hex');
 
+/* ---------- Helpers partagés ---------- */
+const TAGS=['p','br','div','span','b','strong','i','em','u','s','strike','h1','h2','h3','ul','ol','li','a','blockquote','hr','font'];
+const clean=h=>String(h||'').slice(0,30000).replace(/<(script|style|iframe|object|embed)[\s\S]*?<\/\1>/gi,'').replace(/<!--[\s\S]*?-->/g,'').replace(/<(\/?)([a-z][a-z0-9]*)\b([^>]*)>/gi,(m,sl,t,a)=>{t=t.toLowerCase();if(!TAGS.includes(t))return '';if(sl)return '</'+t+'>';let o='';if(t==='a'){const x=/href\s*=\s*"(https?:\/\/[^"\s]*|mailto:[^"\s]*)"/i.exec(a);if(x)o=' href="'+x[1]+'"'}if(t==='font'){const c=/color\s*=\s*"(#[0-9a-f]{3,8})"/i.exec(a);if(c)o+=' color="'+c[1]+'"';const z=/size\s*=\s*"([1-7])"/i.exec(a);if(z)o+=' size="'+z[1]+'"'}const al=/(?:text-align:\s*|align\s*=\s*"?)(left|center|right|justify)/i.exec(a);if(al)o+=' style="text-align:'+al[1].toLowerCase()+'"';return '<'+t+o+(t==='br'||t==='hr'?'/':'')+'>'});
+const text=h=>String(h||'').replace(/<[^>]*>/g,'').trim();
+const addr=s=>(String(s||'').match(/[^\s<>&;"',]+@[^\s<>&;"',]+/)||[''])[0];
+const collabOf=c=>{
+  if(c===undefined)return{skip:1};
+  if(!c)return{v:null};
+  const v={brand:String(c.brand||'').trim().slice(0,80),logo:String(c.logo||'').trim().slice(0,500),email:String(c.email||'').trim().slice(0,120)};
+  if(!v.brand)return{err:'Nom de la marque requis pour une collaboration'};
+  if(!/^https:\/\//.test(v.logo))return{err:'Logo de la marque requis pour une collaboration'};
+  if(v.email&&!/^\S+@\S+\.\S+$/.test(v.email))return{err:'Adresse mail de la marque invalide'};
+  return{v};
+};
+const pubP=p=>{if(!p||!p.collab)return p;const{email,...c}=p.collab;return{...p,collab:c}};
+
+/* ---------- Zoho Mail (API officielle, OAuth) ---------- */
+const ZDC=E.ZOHO_DC||'eu';
+const ZT={t:'',exp:0,acc:E.ZOHO_ACCOUNT_ID||''};
+const ztoken=async()=>{
+  if(ZT.t&&ZT.exp>Date.now()+6e4)return ZT.t;
+  if(!E.ZOHO_CLIENT_ID||!E.ZOHO_CLIENT_SECRET||!E.ZOHO_REFRESH_TOKEN)throw new Error('Zoho non configuré : ajoute ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET et ZOHO_REFRESH_TOKEN dans les variables Vercel');
+  const r=await fetch(`https://accounts.zoho.${ZDC}/oauth/v2/token`,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({refresh_token:E.ZOHO_REFRESH_TOKEN,client_id:E.ZOHO_CLIENT_ID,client_secret:E.ZOHO_CLIENT_SECRET,grant_type:'refresh_token'})});
+  const j=await r.json().catch(()=>({}));
+  if(!j.access_token)throw new Error('Zoho a refusé la connexion ('+(j.error||r.status)+') : vérifie les variables et ZOHO_DC (centre de données)');
+  ZT.t=j.access_token;ZT.exp=Date.now()+(j.expires_in||3600)*1000;return ZT.t;
+};
+const zoho=async(method,p,body,retry=1)=>{
+  const t=await ztoken();
+  const r=await fetch(`https://mail.zoho.${ZDC}/api/`+p,{method,headers:{Authorization:'Zoho-oauthtoken '+t,'Content-Type':'application/json',Accept:'application/json'},body:body?JSON.stringify(body):undefined});
+  if(r.status===401&&retry){ZT.t='';return zoho(method,p,body,0)}
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok){console.error('Zoho',r.status,JSON.stringify(j));throw new Error('Zoho a répondu une erreur : '+(j.data?.moreInfo||j.data?.errorCode||j.status?.description||r.status))}
+  return j;
+};
+const zacc=async()=>{
+  if(!ZT.acc){const j=await zoho('GET','accounts');ZT.acc=String(j.data?.[0]?.accountId||'');if(!ZT.acc)throw new Error('Aucun compte Zoho Mail trouvé')}
+  return ZT.acc;
+};
+
 const MAIL_START={s:'Maintenance en cours sur DidjoTheSHOP',t:`Bonjour,\nNous vous informons qu'une maintenance est actuellement en cours sur DidjoTheSHOP.\nCette intervention a pour objectif d'améliorer nos services et de garantir une meilleure expérience d'utilisation. Durant cette période, certaines fonctionnalités du site peuvent être temporairement indisponibles.\nNous mettons tout en œuvre pour rétablir l'ensemble des services dans les meilleurs délais.\nNous vous remercions pour votre patience, votre compréhension et votre confiance.\nL'équipe DidjoTheSHOP`};
 const MAIL_END={s:'Maintenance terminée – DidjoTheSHOP est de nouveau disponible',t:`Bonjour,\nNous avons le plaisir de vous informer que la maintenance de DidjoTheSHOP est désormais terminée.\nTous nos services sont de nouveau disponibles et vous pouvez dès à présent utiliser le site normalement.\nCette maintenance nous a permis d'améliorer notre plateforme afin de vous offrir une expérience plus fiable, plus sécurisée et plus performante.\nNous vous remercions sincèrement pour votre patience, votre compréhension et votre confiance durant cette intervention.\nSi vous rencontrez la moindre difficulté ou si vous avez une question, notre équipe reste à votre disposition.\nNous vous souhaitons une excellente expérience sur DidjoTheSHOP.\nCordialement,\nL'équipe DidjoTheSHOP\n📧 contact@teamdtk.fr`};
 const mailAll=async(to,subject,text)=>{
@@ -31,15 +71,35 @@ const b32dec=s=>{let bits=0,val=0;const out=[];for(const c of String(s).replace(
 const hotp=(secret,step)=>{const m=Buffer.alloc(8);m.writeBigUInt64BE(BigInt(step));const h=crypto.createHmac('sha1',b32dec(secret)).update(m).digest();const o=h[19]&15;const n=((h[o]&127)<<24)|(h[o+1]<<16)|(h[o+2]<<8)|h[o+3];return String(n%1000000).padStart(6,'0')};
 const totpCheck=(secret,code,last=0)=>{if(!/^\d{6}$/.test(code))return 0;const now=Math.floor(Date.now()/3e4);for(let d=-1;d<=1;d++){const st=now+d;if(st>last&&hotp(secret,st)===code)return st}return 0};
 
+/* Actions d'employés qui doivent être validées par l'admin principal */
+const EMP_OK=['admin/data','admin/upload','admin/requests','admin/mail/','admin/product','admin/mail-html','admin/order','admin/shipping'];
+const precheck=(p,b)=>{
+  if(p==='admin/product'&&!b.del){if(!String(b.name||'').trim()||!(Number(b.price)>0))return 'Nom et prix requis';const c=collabOf(b.collab);if(c.err)return c.err}
+  if(p==='admin/mail-html'&&(!String(b.subject||'').trim()||!text(clean(b.html))))return 'Objet et message requis';
+  if(p==='admin/mail/send'&&(!addr(b.to)||!String(b.subject||'').trim()||!text(clean(b.html))))return 'Destinataire, objet et message requis';
+  if(p==='admin/mail/delete'&&!(/^\d+$/.test(String(b.folder))&&/^\d+$/.test(String(b.id))))return 'Message invalide';
+  return '';
+};
+const labelOf=(p,b,nm)=>({
+  'admin/product':b.del?`Suppression de l'article « ${nm||b.id} »`:b.id?`Modification de l'article « ${String(b.name||nm||'').slice(0,60)} »`:`Ajout de l'article « ${String(b.name||'').slice(0,60)} »`,
+  'admin/mail-html':`Envoi d'un mail à ${b.other||(b.to==='all'||!b.to?'tous les clients':b.to)} : ${String(b.subject||'').slice(0,80)}`,
+  'admin/mail/send':`Mail (boîte Zoho) à ${addr(b.to)} : ${String(b.subject||'').slice(0,80)}`,
+  'admin/mail/delete':'Suppression d\'un mail de la boîte Zoho',
+  'admin/order':`Commande ${b.id} → ${b.status}${b.tracking?' (suivi '+String(b.tracking).slice(0,40)+')':''}`,
+  'admin/shipping':`Frais de livraison → ${b.shipping} €`
+}[p]||p);
+
 export default async function h(req,res){try{return await main(req,res)}catch(e){console.error(e);return res.status(500).json({error:'Erreur serveur : '+e.message})}}
 async function main(req,res){
   const path=new URL(req.url,'http://x').pathname.replace(/^\/api\//,'').replace(/\/$/,'');
+  const qs=new URL(req.url,'http://x').searchParams;
   const b=req.body||{},send=(c,o)=>res.status(c).json(o);const origin='https://'+(req.headers['x-forwarded-host']||req.headers.host);
   const login=u=>res.setHeader('Set-Cookie',`s=${u};HttpOnly;Secure;SameSite=Lax;Path=/;Max-Age=2592000`);
   const users=await rd('users',[]);
   let user=null;const ck=(req.headers.cookie||'').match(/s=([^;]+)/)?.[1];
   if(ck){const[p,g]=ck.split('.');if(g&&g===sign(p)){try{const t=JSON.parse(Buffer.from(p,'base64url'));if(t.exp>Date.now())user=users.find(u=>u.id===t.id&&!u.banned)||null}catch{}}}
   const admin=!!user&&user.email===(E.ADMIN_EMAIL||'').toLowerCase();
+  const emp=!!user&&!admin&&!!user.employee,staff=admin||emp;
   const start=u=>{const p=Buffer.from(JSON.stringify({id:u.id,exp:Date.now()+2592e6})).toString('base64url');login(p+'.'+sign(p))};
   const pub=u=>({name:u.name,email:u.email,admin:u.email===(E.ADMIN_EMAIL||'').toLowerCase(),totp:!!u.totp,address:u.address||'',employee:!!u.employee,unsubscribed:!!u.unsubscribed,seller:u.seller?{status:u.seller.status,shop:u.seller.shop}:null});
   const issue=async u=>{
@@ -67,6 +127,58 @@ async function main(req,res){
       try{await stripe.transfers.create({amount:net,currency:'eur',destination:u.seller.stripeId,transfer_group:o.id,source_transaction:pi.latest_charge,metadata:{orderId:o.id,sellerId:sid}},{idempotencyKey:'tr-'+o.id+'-'+sid})}catch(e){all=false;console.error('Transfert',e.message)}}
     if(all)o.transferred=true;
   };
+
+  /* Actions sensibles : l'admin les exécute, un employé les soumet à validation */
+  const GATED={
+    'admin/product':async b=>{
+      let ps=await rd('products',[]);
+      if(b.del)ps=ps.filter(p=>p.id!==b.id);
+      else{const old=ps.find(x=>x.id===b.id)||{};
+        const imgs=Array.isArray(b.images)?b.images.map(String).filter(Boolean).slice(0,10):(old.images||[]);
+        const c=collabOf(b.collab);if(c.err)return[400,{error:c.err}];
+        const p={...old,id:b.id||uid(),name:String(b.name||'').slice(0,80),desc:String(b.desc||'').slice(0,2000),price:Math.round(Number(b.price)*100)||0,image:imgs[0]||String(b.image||old.image||''),images:imgs,sub:!!b.sub,virtual:b.virtual===undefined?!!old.virtual:!!b.virtual};
+        if(!c.skip){if(c.v)p.collab=c.v;else delete p.collab}
+        if(!p.name||p.price<=0)return[400,{error:'Nom et prix requis'}];
+        const i=ps.findIndex(x=>x.id===p.id);i<0?ps.push(p):ps[i]=p;b.id=p.id}
+      await wr('products',ps);return[200,{id:b.id}];
+    },
+    'admin/mail-html':async b=>{
+      const subject=String(b.subject||'').trim().slice(0,150),body=clean(b.html);
+      if(!subject||!text(body))return[400,{error:'Objet et message requis'}];
+      const one=String(b.other||'').trim().toLowerCase()||(b.to==='all'?'':String(b.to||'').trim().toLowerCase());
+      const eligible=users.filter(u=>!u.banned&&!u.unsubscribed);
+      const to=one?[one]:eligible.map(u=>u.email).slice(0,100);
+      if(!to.length||to.some(e=>!/^\S+@\S+\.\S+$/.test(e)))return[400,{error:'Destinataire invalide'}];
+      const html='<div style="font-family:Arial,sans-serif;font-size:16px;line-height:1.5;color:#142033">'+body+'</div>';
+      const r=await fetch('https://api.resend.com/emails/batch',{method:'POST',headers:{Authorization:'Bearer '+E.RESEND_API_KEY,'Content-Type':'application/json'},body:JSON.stringify(to.map(e=>({from:E.MAIL_FROM,reply_to:E.MAIL_REPLY_TO,to:[e],subject,html})))});
+      if(!r.ok)return[502,{error:"Resend a refusé l'envoi : vérifie la clé API et le domaine"}];
+      return[200,{sent:to.length}];
+    },
+    'admin/order':async b=>{
+      const orders=await rd('orders',[]),o=orders.find(x=>x.id===b.id);if(!o)return[404,{error:'Commande introuvable'}];
+      const changed=o.status!==b.status||o.tracking!==b.tracking;o.status=b.status;o.tracking=String(b.tracking||'').slice(0,80);o.archived=o.status==='Livré';await wr('orders',orders);
+      if(changed&&['Expédié','En cours de livraison','Livré'].includes(o.status))await mail(o.email,`Commande ${o.id} : ${o.status}`,`<p>Ta commande <b>${o.id}</b> est maintenant : <b>${esc(o.status)}</b>.</p>${o.tracking?`<p>Code de suivi : <b>${esc(o.tracking)}</b></p>`:''}`);
+      return[200,{}];
+    },
+    'admin/shipping':async b=>{await wr('settings',{shipping:Math.max(0,Math.round(Number(b.shipping)*100)||0)});return[200,{}]},
+    'admin/mail/send':async b=>{
+      const to=addr(b.to),subject=String(b.subject||'').trim().slice(0,200),html=clean(b.html);
+      if(!to||!subject||!text(html))return[400,{error:'Destinataire, objet et message requis'}];
+      const a=await zacc();
+      const body={fromAddress:E.ZOHO_FROM||'contact@teamdtk.fr',toAddress:to,subject,content:'<div style="font-family:Arial,sans-serif;font-size:15px;line-height:1.5">'+html+'</div>',mailFormat:'html'};
+      const rid=b.replyTo&&/^\d+$/.test(String(b.replyTo.id))?String(b.replyTo.id):'';
+      if(rid){try{await zoho('POST',`accounts/${a}/messages/${rid}`,{...body,action:'reply'});return[200,{sent:true}]}catch(e){console.error('Zoho reply -> envoi simple',e.message)}}
+      await zoho('POST',`accounts/${a}/messages`,body);
+      return[200,{sent:true}];
+    },
+    'admin/mail/delete':async b=>{
+      const f=String(b.folder),id=String(b.id);
+      if(!/^\d+$/.test(f)||!/^\d+$/.test(id))return[400,{error:'Message invalide'}];
+      const a=await zacc();await zoho('DELETE',`accounts/${a}/folders/${f}/messages/${id}`);
+      return[200,{}];
+    }
+  };
+
   const MT=await rd('maintenance',{on:false});
   if(path==='maintenance')return send(200,{on:!!MT.on});
   if(MT.on&&!admin&&!['me','logout','verify'].includes(path)){
@@ -74,8 +186,25 @@ async function main(req,res){
     if(!admLogin)return send(503,{error:'Maintenance en cours : réessaie dans quelques instants',maintenance:true});
   }
 
-  if(path.startsWith('admin/')&&!admin)return send(403,{error:'Accès refusé'});
-  if(path==='products')return send(200,{products:await rd('products',[]),shipping:(await rd('settings',{shipping:0})).shipping});
+  if(path.startsWith('admin/')){
+    if(!staff)return send(403,{error:'Accès refusé'});
+    if(emp&&!EMP_OK.some(x=>path===x||(x.endsWith('/')&&path.startsWith(x))))return send(403,{error:"Action réservée à l'administrateur principal"});
+    const G=GATED[path];
+    if(G){
+      if(admin){const[c,o]=await G(b);return send(c,o)}
+      const er=precheck(path,b);if(er)return send(400,{error:er});
+      const pl=b.html!==undefined?{...b,html:clean(b.html)}:b;
+      if(JSON.stringify(pl).length>80000)return send(400,{error:'Demande trop volumineuse'});
+      let nm='';if(path==='admin/product'&&b.id)nm=((await rd('products',[])).find(x=>x.id===b.id)||{}).name||'';
+      const rs=await rd('requests',[]);
+      const r={id:'RQ'+uid().toUpperCase(),by:user.id,byName:user.name,byEmail:user.email,path,label:labelOf(path,pl,nm),payload:pl,status:'pending',date:Date.now()};
+      rs.push(r);await wr('requests',rs.slice(-300));
+      await mail(E.ADMIN_EMAIL,'Validation requise : '+r.label,`<p><b>${esc(user.name)}</b> (${esc(user.email)}) demande :</p><p><b>${esc(r.label)}</b></p><p><a href="${origin}/admin#validations">Accepter ou refuser dans le panel admin</a></p>`);
+      return send(200,{pending:true,id:r.id});
+    }
+  }
+
+  if(path==='products')return send(200,{products:(await rd('products',[])).map(pubP),shipping:(await rd('settings',{shipping:0})).shipping});
   if(path==='me')return send(200,user?pub(user):null);
   if(path==='logout'){login('');return send(200,{})}
   if(path==='register'){
@@ -114,8 +243,8 @@ async function main(req,res){
     if(!crypto.timingSafeEqual(Buffer.from(g),Buffer.from(u.code.h))){u.code.tries++;if(u.code.tries>=5)delete u.code;await wr('users',users);return send(400,{error:'Code incorrect'})}
     delete u.code;delete u.pend;u.verified=true;await wr('users',users);start(u);return send(200,pub(u));
   }
-    if(path==='employees')return send(200,users.filter(u=>u.employee&&!u.banned).map(u=>({name:u.name,email:u.email})));
-  if(path==='product'){const id=new URL(req.url,'http://x').searchParams.get('id');const p=(await rd('products',[])).find(x=>x.id===id);if(!p)return send(404,{error:'Article introuvable'});const s=p.sellerId&&users.find(u=>u.id===p.sellerId);return send(200,{...p,seller:s&&s.seller?s.seller.shop:''})}
+  if(path==='employees')return send(200,users.filter(u=>u.employee&&!u.banned).map(u=>({name:u.name,email:u.email})));
+  if(path==='product'){const id=qs.get('id');const p=(await rd('products',[])).find(x=>x.id===id);if(!p)return send(404,{error:'Article introuvable'});const s=p.sellerId&&users.find(u=>u.id===p.sellerId);return send(200,{...pubP(p),seller:s&&s.seller?s.seller.shop:''})}
   if(path==='set-password'){
     const t=String(b.token||''),u=users.find(x=>x.invite&&x.invite.h===sign('i'+t));
     if(!t||!u||u.invite.exp<Date.now())return send(400,{error:"Lien invalide ou expiré : demande un nouveau mail à l'administrateur"});
@@ -123,7 +252,7 @@ async function main(req,res){
     u.hash=hash(String(b.password));delete u.invite;u.verified=true;await wr('users',users);return send(200,{});
   }
   if(!user)return send(401,{error:'Connecte-toi pour continuer'});
-  
+
   const pwCheck=async pw=>{
     if(user.lock>Date.now())return 'Trop de tentatives : réessaie dans quelques minutes';
     if(user.hash&&ok(String(pw||''),user.hash)){user.fails=0;return ''}
@@ -220,7 +349,48 @@ async function main(req,res){
     if(s&&s.payment_status==='paid'&&s.client_reference_id===o.id){o.paid=true;o.paidAmount=s.amount_total;await payout(o).catch(e=>console.error('Payout',e.message));await wr('orders',orders);await mail(user.email,`Paiement reçu pour la commande ${o.id}`,`<p>Merci ! Le paiement pour la commande <b>${o.id}</b> est bien reçu.</p>`);return send(200,{paid:true})}
     return send(200,{paid:false});
   }
-  
+
+  /* ---------- Panel admin / employés ---------- */
+  if(path==='admin/data')return send(200,{role:admin?'admin':'employee',zoho:!!(E.ZOHO_CLIENT_ID&&E.ZOHO_REFRESH_TOKEN),products:await rd('products',[]),orders:(await rd('orders',[])).reverse().map(o=>({...o,name:users.find(u=>u.id===o.userId)?.name||''})),users:users.map(u=>({id:u.id,name:u.name,email:u.email,banned:u.banned,employee:!!u.employee,unsubscribed:!!u.unsubscribed,seller:u.seller?{status:u.seller.status,shop:u.seller.shop,type:u.seller.type,siret:admin?u.seller.siret:'',desc:admin?u.seller.desc:''}:null})),shipping:(await rd('settings',{shipping:0})).shipping});
+
+  if(path==='admin/requests'){
+    const rs=(await rd('requests',[])).slice().reverse();
+    return send(200,admin?rs.slice(0,150):rs.filter(r=>r.by===user.id).slice(0,50).map(({payload,...r})=>r));
+  }
+  if(path==='admin/request-decide'){
+    if(!admin)return send(403,{error:"Action réservée à l'administrateur principal"});
+    const rs=await rd('requests',[]),r=rs.find(x=>x.id===b.id);
+    if(!r||r.status!=='pending')return send(404,{error:'Demande introuvable ou déjà traitée'});
+    const who=users.find(u=>u.id===r.by);
+    if(b.approve){
+      try{const[c,o]=await GATED[r.path](r.payload);if(c>=400)throw new Error(o.error||'Erreur')}
+      catch(e){return send(500,{error:"L'action n'a pas pu être exécutée : "+e.message+' (la demande reste en attente)'})}
+      r.status='approved';
+    }else{r.status='rejected';r.reason=String(b.reason||'').slice(0,300)}
+    r.done=Date.now();await wr('requests',rs);
+    if(who)await mail(who.email,r.status==='approved'?'Demande acceptée':'Demande refusée',`<p>${r.status==='approved'?'Ta demande a été <b>acceptée</b> et exécutée':'Ta demande a été <b>refusée</b>'} :</p><p><b>${esc(r.label)}</b></p>${r.reason?`<p>Motif : ${esc(r.reason)}</p>`:''}`);
+    return send(200,{});
+  }
+
+  /* Boîte mail Zoho (lecture) */
+  if(path==='admin/mail/folders'){
+    const a=await zacc(),j=await zoho('GET',`accounts/${a}/folders`);
+    return send(200,(j.data||[]).map(f=>({id:String(f.folderId),name:f.folderName,type:f.folderType||'',unread:Number(f.unreadCount)||0})));
+  }
+  if(path==='admin/mail/list'){
+    const f=String(qs.get('folder')||''),s=Math.max(1,parseInt(qs.get('start'))||1);
+    if(!/^\d+$/.test(f))return send(400,{error:'Dossier invalide'});
+    const a=await zacc(),j=await zoho('GET',`accounts/${a}/messages/view?folderId=${f}&start=${s}&limit=40&sortBy=date&sortorder=false`);
+    return send(200,{messages:(j.data||[]).map(m=>({id:String(m.messageId),folder:String(m.folderId||f),from:addr(m.fromAddress)||String(m.fromAddress||''),name:String(m.sender||''),to:String(m.toAddress||''),subject:String(m.subject||'(sans objet)'),summary:String(m.summary||''),time:Number(m.receivedTime)||0,unread:String(m.status)==='0',att:String(m.hasAttachment)==='1'}))});
+  }
+  if(path==='admin/mail/read'){
+    const f=String(qs.get('folder')||''),id=String(qs.get('id')||'');
+    if(!/^\d+$/.test(f)||!/^\d+$/.test(id))return send(400,{error:'Message invalide'});
+    const a=await zacc(),j=await zoho('GET',`accounts/${a}/folders/${f}/messages/${id}/content`);
+    zoho('PUT',`accounts/${a}/updatemessage`,{mode:'markAsRead',messageId:[id]}).catch(e=>console.error('Zoho markAsRead',e.message));
+    return send(200,{html:String(j.data?.content||'')});
+  }
+
   if(path==='admin/maintenance'){
     const on=!!b.on;
     if(!!MT.on===on)return send(200,{on,sent:0,total:0,unchanged:true});
@@ -230,22 +400,6 @@ async function main(req,res){
     const sent=await mailAll(to,m.s,m.t);
     return send(200,{on,sent,total:to.length});
   }
-  if(path==='admin/mail-html'){
-    const T=['p','br','div','span','b','strong','i','em','u','s','strike','h1','h2','h3','ul','ol','li','a','blockquote','hr','font'];
-    const clean=h=>String(h||'').slice(0,30000).replace(/<(script|style|iframe|object|embed)[\s\S]*?<\/\1>/gi,'').replace(/<!--[\s\S]*?-->/g,'').replace(/<(\/?)([a-z][a-z0-9]*)\b([^>]*)>/gi,(m,sl,t,a)=>{t=t.toLowerCase();if(!T.includes(t))return '';if(sl)return '</'+t+'>';let o='';if(t==='a'){const x=/href\s*=\s*"(https?:\/\/[^"\s]*|mailto:[^"\s]*)"/i.exec(a);if(x)o=' href="'+x[1]+'"'}if(t==='font'){const c=/color\s*=\s*"(#[0-9a-f]{3,8})"/i.exec(a);if(c)o+=' color="'+c[1]+'"';const z=/size\s*=\s*"([1-7])"/i.exec(a);if(z)o+=' size="'+z[1]+'"'}const al=/(?:text-align:\s*|align\s*=\s*"?)(left|center|right|justify)/i.exec(a);if(al)o+=' style="text-align:'+al[1].toLowerCase()+'"';return '<'+t+o+(t==='br'||t==='hr'?'/':'')+'>'});
-    const subject=String(b.subject||'').trim().slice(0,150),body=clean(b.html);
-    if(!subject||!body.replace(/<[^>]*>/g,'').trim())return send(400,{error:'Objet et message requis'});
-    const one=String(b.other||'').trim().toLowerCase()||(b.to==='all'?'':String(b.to||'').trim().toLowerCase());
-    const eligibleUsers = users.filter(u=>!u.banned && !u.unsubscribed);
-    const to=one?[one]:eligibleUsers.map(u=>u.email).slice(0,100);
-    if(!to.length||to.some(e=>!/^\S+@\S+\.\S+$/.test(e)))return send(400,{error:'Destinataire invalide'});
-    const html='<div style="font-family:Arial,sans-serif;font-size:16px;line-height:1.5;color:#142033">'+body+'</div>';
-    const r=await fetch('https://api.resend.com/emails/batch',{method:'POST',headers:{Authorization:'Bearer '+E.RESEND_API_KEY,'Content-Type':'application/json'},body:JSON.stringify(to.map(e=>({from:E.MAIL_FROM,reply_to:E.MAIL_REPLY_TO,to:[e],subject,html})))});
-    if(!r.ok)return send(502,{error:"Resend a refusé l'envoi : vérifie la clé API et le domaine"});
-    return send(200,{sent:to.length});
-  }
-  if(path==='admin/data')return send(200,{products:await rd('products',[]),orders:(await rd('orders',[])).reverse().map(o=>({...o,name:users.find(u=>u.id===o.userId)?.name||''})),users:users.map(u=>({id:u.id,name:u.name,email:u.email,banned:u.banned,employee:!!u.employee,unsubscribed:!!u.unsubscribed,seller:u.seller?{status:u.seller.status,shop:u.seller.shop,type:u.seller.type,siret:u.seller.siret,desc:u.seller.desc}:null})),shipping:(await rd('settings',{shipping:0})).shipping});
-  
   if(path==='admin/user-create'){
     const email=String(b.email||'').trim().toLowerCase(),name=String(b.name||'').trim().slice(0,60);
     if(!name||!/^\S+@\S+\.\S+$/.test(email))return send(400,{error:'Nom et email valide requis'});
@@ -272,17 +426,7 @@ async function main(req,res){
     await wr('users',users);
     return send(200,{});
   }
-  if(path==='admin/product'){
-    let ps=await rd('products',[]);
-    if(b.del)ps=ps.filter(p=>p.id!==b.id);
-    else{const old=ps.find(x=>x.id===b.id)||{};
-      const imgs=Array.isArray(b.images)?b.images.map(String).filter(Boolean).slice(0,10):(old.images||[]);
-      const p={...old,id:b.id||uid(),name:String(b.name||'').slice(0,80),desc:String(b.desc||'').slice(0,2000),price:Math.round(Number(b.price)*100)||0,image:imgs[0]||String(b.image||old.image||''),images:imgs,sub:!!b.sub,virtual:b.virtual===undefined?!!old.virtual:!!b.virtual};
-      if(!p.name||p.price<=0)return send(400,{error:'Nom et prix requis'});
-      const i=ps.findIndex(x=>x.id===p.id);i<0?ps.push(p):ps[i]=p;b.id=p.id}
-    await wr('products',ps);return send(200,{id:b.id});
-  }
-    if(path==='admin/seller'){
+  if(path==='admin/seller'){
     const u=users.find(x=>x.id===b.id);if(!u||!u.seller)return send(404,{error:'Demande introuvable'});
     if(b.approve){
       if(!stripe)return send(500,{error:'STRIPE_SECRET_KEY manquant'});
@@ -292,16 +436,12 @@ async function main(req,res){
     }else{u.seller.status='rejected';u.seller.reason=String(b.reason||'').slice(0,300);await wr('users',users);await mail(u.email,'Ta demande vendeur',`<p>Ta demande n'a pas été acceptée.</p><p>${esc(u.seller.reason)}</p>`)}
     return send(200,{});
   }
-  if(path==='admin/shipping'){await wr('settings',{shipping:Math.max(0,Math.round(Number(b.shipping)*100)||0)});return send(200,{})}
   if(path==='admin/upload'){const r=await put('img/'+uid()+'-'+String(b.name||'img').replace(/[^\w.-]/g,'_'),Buffer.from(b.data,'base64'),{access:'public',contentType:b.type||'image/jpeg'});return send(200,{url:r.url})}
   if(path==='admin/ban'){const u=users.find(x=>x.id===b.id);if(u&&u.email!==user.email){u.banned=!!b.banned;await wr('users',users)}return send(200,{})}
-  if(path==='admin/order'){
-    const orders=await rd('orders',[]),o=orders.find(x=>x.id===b.id);if(!o)return send(404,{error:'Commande introuvable'});
-    const changed=o.status!==b.status||o.tracking!==b.tracking;o.status=b.status;o.tracking=String(b.tracking||'').slice(0,80);o.archived=o.status==='Livré';await wr('orders',orders);
-    if(changed&&['Expédié','En cours de livraison','Livré'].includes(o.status))await mail(o.email,`Commande ${o.id} : ${o.status}`,`<p>Ta commande <b>${o.id}</b> est maintenant : <b>${esc(o.status)}</b>.</p>${o.tracking?`<p>Code de suivi : <b>${esc(o.tracking)}</b></p>`:''}`);
-    return send(200,{});
-  }
   if(path==='admin/order-delete'){const orders=await rd('orders',[]),o=orders.find(x=>x.id===b.id);if(!o||!o.archived)return send(400,{error:'Seules les commandes livrées (archivées) peuvent être supprimées'});await wr('orders',orders.filter(x=>x.id!==b.id));return send(200,{})}
+  if(path.startsWith('admin/'))return send(404,{error:'Introuvable'});
+
+  /* ---------- Espace vendeur ---------- */
   const S=user.seller,pct=Number(E.COMMISSION_PCT||10);
   const ready=async()=>{if(!S||!S.stripeId)return false;try{const a=await stripe.accounts.retrieve(S.stripeId);S.ready=a.capabilities?.transfers==='active'&&!!a.details_submitted;S.payouts=!!a.payouts_enabled;await wr('users',users)}catch(e){console.error(e.message)}return !!S.ready};
   if(path==='seller/apply'){
