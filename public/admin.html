@@ -6,7 +6,7 @@ main{max-width:none;padding:20px clamp(12px,3vw,40px) 80px}.form{max-width:none}
 .tb button,.tb select,.tb input{width:auto;padding:6px 10px;font-size:.9rem}.tb input[type=color]{padding:2px;height:34px;width:42px}
 .ed{min-height:max(220px,calc(100vh - 430px));border:1px solid var(--line);border-radius:0 0 10px 10px;padding:14px;background:#fff;color:#142033;overflow:auto;line-height:1.5}.ed a{color:#2456f5}
 /* Boîte mail */
-.mb{display:grid;grid-template-columns:190px 370px 1fr;gap:12px;height:calc(100vh - 190px);min-height:480px}
+.mb{display:grid;grid-template-columns:190px 370px 1fr;gap:12px;height:calc(100vh - 240px);min-height:480px}
 .mb>div{border:1px solid var(--line);border-radius:12px;background:var(--card);overflow:auto}
 .mi{padding:10px 12px;border-bottom:1px solid var(--line);cursor:pointer}.mi:hover{background:rgba(127,127,127,.1)}.mi.act,.mi.sel{background:rgba(127,127,127,.18)}.mi .s{font-weight:400}.mi.u .s,.mi.act .s{font-weight:800}
 .mf{width:100%;min-height:55vh;border:1px solid var(--line);border-radius:8px;background:#fff}
@@ -36,7 +36,7 @@ html.m header{flex-wrap:wrap}
 <script>
 const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),eur=c=>(c/100).toFixed(2).replace('.',',')+' €';
 const api=async(p,b)=>{const r=await fetch('/api/'+p,b?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}:{});const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||'Erreur');return j};
-const ST=['En préparation','Expédié','En cours de livraison','Livré'];let D,RQ=[],tab='orders',imgs=[],clogo='',MT=false,first=true;
+const ST=['En préparation','Expédié','En cours de livraison','Livré'];let UN=0,SEEN=null,POLL=null;let D,RQ=[],tab='orders',imgs=[],clogo='',MT=false,first=true;
 const PEND="⏳ Demande envoyée : l'administrateur principal doit l'accepter (il a reçu un mail).";
 const note=(t,err)=>{const e=$('#m');if(e)e.innerHTML=`<span class="${err?'err':'ok'}">${esc(t)}</span>`};
 const showErr=m=>{const e=$('#m')||$('#v');if(e)e.innerHTML='<span class="err">Erreur : '+esc(m)+'</span>'};
@@ -58,15 +58,16 @@ const addr=s=>(String(s||'').match(/[^\s<>&;"',]+@[^\s<>&;"',]+/)||[''])[0];
 const isAdm=()=>D&&D.role==='admin';
 const pendN=()=>RQ.filter(r=>r.status==='pending').length;
 const TABS=()=>isAdm()
- ?[['orders','Commandes','📦'],['archive','Archives','🗂️'],['products','Articles','🛍️'],['box','Boîte mail','📥'],['mail','Envoi mail','✉️'],['valid','Validations'+(pendN()?' ('+pendN()+')':''),'✅'],['users','Comptes','👥'],['sellers','Vendeurs','🏪'],['set','Livraison','🚚'],['maint',MT?'Maintenance 🔴':'Maintenance','🛠️']]
- :[['orders','Commandes','📦'],['archive','Archives','🗂️'],['products','Articles','🛍️'],['box','Boîte mail','📥'],['mail','Envoi mail','✉️'],['mine','Mes demandes','⏳'],['set','Livraison','🚚']];
+ ?[['orders','Commandes','📦'],['archive','Archives','🗂️'],['products','Articles','🛍️'],['box','Boîte mail'+(UN?' ('+UN+')':''),'📥'],['mail','Envoi mail','✉️'],['valid','Validations'+(pendN()?' ('+pendN()+')':''),'✅'],['users','Comptes','👥'],['sellers','Vendeurs','🏪'],['set','Livraison','🚚'],['maint',MT?'Maintenance 🔴':'Maintenance','🛠️']]
+ :[['orders','Commandes','📦'],['archive','Archives','🗂️'],['products','Articles','🛍️'],['box','Boîte mail'+(UN?' ('+UN+')':''),'📥'],['mail','Envoi mail','✉️'],['mine','Mes demandes','⏳'],['set','Livraison','🚚']];
 async function load(){
  try{D=await api('admin/data')}catch(e){return $('#v').innerHTML='<h1>Accès refusé</h1><p>Connecte-toi avec un compte administrateur ou employé sur <a href="/login?next=/admin">la page de connexion</a>.</p>'}
  try{RQ=await api('admin/requests')}catch{RQ=[]}
  try{if(isAdm())MT=!!(await api('maintenance')).on}catch{}
- if(first){first=false;if(location.hash==='#validations'&&isAdm())tab='valid'}
+ if(first){first=false;if(location.hash==='#validations'&&isAdm())tab='valid';if(location.hash==='#boite'&&D.zoho)tab='box';if(notifOK()&&'serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{})}
  if(!TABS().some(t=>t[0]===tab))tab='orders';
- draw()}
+ draw();
+ if(D.zoho&&!POLL){poll();POLL=setInterval(poll,60000)}}
 window.go=k=>{tab=k;draw()};
 const rows=(list,arch)=>`<p><input id="q" placeholder="Rechercher : code de suivi, nom du compte, email, n° de commande" oninput="flt(this.value)"></p><div class="tw"><table>${list.map(o=>`<tr data-s="${esc([o.id,o.email,o.name,o.tracking].join(' ').toLowerCase())}"><td><b>${o.id}</b><br><b>${esc(o.name)}</b><br><span class="mut">${esc(o.email)}</span><br>${eur(o.total)}<br>${o.paid?'<span class="ok">Payée</span>':'<span class="err">Non payée</span>'}</td><td class="mut">${o.items.map(i=>esc(i.name)+(i.virtual?' (virtuel)':'')+' ×'+i.qty).join('<br>')}<br>${esc(o.address)}</td><td>${arch?`<b>Livrée</b>${o.tracking?`<br><span class="mut">Suivi : ${esc(o.tracking)}</span>`:''}${isAdm()?`<br><button class="red" onclick="delo('${o.id}')">Supprimer définitivement</button>`:''}`:`<select id="s${o.id}">${ST.map(s=>`<option ${s==o.status?'selected':''}>${s}</option>`).join('')}</select><input id="t${o.id}" placeholder="Code de suivi" value="${esc(o.tracking)}"><button onclick="ord('${o.id}')">Enregistrer</button>`}</td></tr>`).join('')||'<tr><td>Aucune commande.</td></tr>'}</table></div>`;
 
@@ -86,7 +87,7 @@ products:()=>`<div class="card form"><h2 style="margin-top:0">Nouvel article</h2
 <label><input id="pc" type="checkbox" style="width:auto" onchange="$('#pcb').style.display=this.checked?'block':'none'"> 🤝 C'est une collaboration avec une marque (facultatif)</label>
 <div id="pcb" style="display:none"><div class="fgrid"><div><label>Nom de la marque</label><input id="pcn"></div><div><label>Adresse mail de la marque (facultatif)</label><input id="pce" type="email"></div></div><label>Logo de la marque</label><input type="file" id="pcf" accept="image/*" onchange="upLogo(this)"><p id="pcv">${clogo?`<img src="${esc(clogo)}" height="56" alt="">`:''}</p></div>
 <p><button onclick="prod()">${isAdm()?"Ajouter l'article":"Proposer l'article (validation requise)"}</button></p></div><h2>Articles en ligne</h2><div class="tw"><table>${D.products.map(p=>`<tr><td>${p.image?`<img src="${esc(p.image)}" width="56" alt="">`:''}</td><td><b>${esc(p.name)}</b><br>${eur(p.price)}${p.sub?' / mois':''}${p.collab?`<br>🤝 <b>${esc(p.collab.brand)}</b>${p.collab.email?` <span class="mut">${esc(p.collab.email)}</span>`:''}`:''}<br><a href="/p/${p.id}" target="_blank">Voir la page</a></td><td><select onchange="kind('${p.id}',this.value)"><option value="0" ${p.virtual?'':'selected'}>Réel</option><option value="1" ${p.virtual?'selected':''}>Virtuel</option></select><button class="alt" onclick="editCollab('${p.id}')">🤝 ${p.collab?'Modifier la collab':'Collaboration'}</button></td><td><button class="red" onclick="del('${p.id}')">Supprimer</button></td></tr>`).join('')}</table></div>`,
-box:()=>D.zoho?`<div class="mb" id="mb" data-v="list"><div id="mbf"></div><div id="mbl"></div><div id="mbr"><p class="mut" style="padding:14px">Choisis un message à gauche.</p></div></div>`:`<div class="card"><h2 style="margin-top:0">Boîte mail Zoho non connectée</h2><p>Ajoute ces variables dans Vercel (Settings → Environment Variables) puis redéploie : <b>ZOHO_CLIENT_ID</b>, <b>ZOHO_CLIENT_SECRET</b>, <b>ZOHO_REFRESH_TOKEN</b> (et <b>ZOHO_DC</b> si ton Zoho n'est pas en .eu).</p></div>`,
+box:()=>D.zoho?`<div id="nb">${notifBar()}</div><div class="mb" id="mb" data-v="list"><div id="mbf"></div><div id="mbl"></div><div id="mbr"><p class="mut" style="padding:14px">Choisis un message à gauche.</p></div></div>`:`<div class="card"><h2 style="margin-top:0">Boîte mail Zoho non connectée</h2><p>Ajoute ces variables dans Vercel (Settings → Environment Variables) puis redéploie : <b>ZOHO_CLIENT_ID</b>, <b>ZOHO_CLIENT_SECRET</b>, <b>ZOHO_REFRESH_TOKEN</b> (et <b>ZOHO_DC</b> si ton Zoho n'est pas en .eu).</p></div>`,
 mail:()=>`<div class="card form"><h2 style="margin-top:0">Envoyer un mail aux clients (Resend)</h2><div class="fgrid"><div><label>Destinataire</label><select id="mt"><option value="all">Tous les clients non désabonnés (${D.users.filter(u=>!u.banned&&!u.unsubscribed).length})</option>${D.users.filter(u=>!u.banned).map(u=>`<option value="${esc(u.email)}">${esc(u.name)} · ${esc(u.email)}${u.employee?' 👤 Employé DTK':''}${u.unsubscribed?' ⛔ Désabonné':''}</option>`).join('')}</select></div><div><label>Ou une autre adresse (facultatif)</label><input id="mo" type="email" placeholder="client@exemple.fr"></div></div><label>Objet</label><input id="ms"><label>Message</label>${tbar()}<div id="ed" class="ed" contenteditable="true" spellcheck="true"></div><p><button onclick="sendMail()">${isAdm()?'Envoyer le mail':'Envoyer pour validation'}</button></p><p class="mut">Chaque destinataire reçoit son propre mail. Maximum 100 destinataires par envoi. Les utilisateurs désabonnés sont exclus de l'envoi "Tous les clients".</p></div>`,
 valid:()=>`<h2>Demandes des employés</h2>`+rqTable(true),
 mine:()=>`<h2>Mes demandes</h2><p class="mut">Chaque action (article, mail, statut de commande, livraison…) doit être acceptée par l'administrateur principal avant d'être appliquée.</p>`+rqTable(false),
@@ -134,12 +135,43 @@ function mbDraw(){
 }
 window.mbF=async id=>{MB.cur=id;MB.sel=null;MB.cmp=null;try{await mbList(1)}catch(e){note(e.message,1)}};
 window.mbOpen=async i=>{const m=MB.msgs[i];MB.sel=i;MB.cmp=null;MB.html=null;mbDraw();
- try{MB.html=(await api(`admin/mail/read?folder=${m.folder}&id=${m.id}`)).html;m.unread=false}catch(e){MB.html='<p>'+esc(e.message)+'</p>'}
+ try{MB.html=(await api(`admin/mail/read?folder=${m.folder}&id=${m.id}`)).html;if(m.unread){UN=Math.max(0,UN-1);badge()}m.unread=false}catch(e){MB.html='<p>'+esc(e.message)+'</p>'}
  if(MB.sel===i)mbDraw()};
 window.mbNew=()=>{MB.cmp={to:'',subject:'',rep:null};mbDraw()};
 window.mbReply=()=>{const m=MB.msgs[MB.sel];MB.cmp={to:addr(m.from),subject:/^re:/i.test(m.subject)?m.subject:'Re: '+m.subject,rep:{id:m.id,folder:m.folder}};mbDraw()};
 window.mbSend=async()=>{try{const r=await api('admin/mail/send',{to:$('#cx-t').value,subject:$('#cx-s').value,html:$('#cx-e').innerHTML,replyTo:MB.cmp.rep});MB.cmp=null;note(r.pending?PEND:'Mail envoyé');mbDraw();if(!r.pending)setTimeout(()=>mbList(1).catch(()=>{}),1500);RQ=await api('admin/requests').catch(()=>RQ)}catch(e){note(e.message,1)}};
 window.mbDel=async()=>{const m=MB.msgs[MB.sel];if(!confirm('Supprimer ce mail ?'))return;try{const r=await api('admin/mail/delete',{folder:m.folder,id:m.id});if(r.pending)note(PEND);else{MB.msgs.splice(MB.sel,1);MB.sel=null;note('Mail supprimé')}mbDraw()}catch(e){note(e.message,1)}};
+
+/* ---- Notifications web : nouveaux mails de la boîte contact ---- */
+const notifOK=()=>{try{return 'Notification' in window&&Notification.permission==='granted'&&localStorage.mbn==='1'}catch{return false}};
+const notifBar=()=>{
+ if(!('Notification' in window))return '<p class="mut">🔕 Ce navigateur ne gère pas les notifications web.</p>';
+ if(Notification.permission==='denied')return "<p class=\"mut\">🔕 Notifications bloquées : autorise-les dans les réglages du site (cadenas à côté de l'adresse), puis recharge la page.</p>";
+ return notifOK()?`<p class="row"><span class="ok">🔔 Notifications activées (tant qu'une page admin reste ouverte)</span> <button class="alt" style="width:auto" onclick="notifOff()">Désactiver</button></p>`:`<p><button onclick="notifOn()">🔔 Activer les notifications</button></p>`};
+const badge=()=>{document.title=(UN?'('+UN+') ':'')+'Admin · DidjoTheSHOP';const l=document.querySelector(".tabs button[onclick=\"go('box')\"] .tl");if(l)l.textContent='Boîte mail'+(UN?' ('+UN+')':'')};
+const ping=async nw=>{
+ const m=nw[0],title=nw.length>1?nw.length+' nouveaux mails':(m.name||m.from||'DidjoTheSHOP');
+ const o={body:nw.length>1?nw.slice(0,3).map(x=>x.subject).join('\n'):m.subject,tag:'mb',renotify:true};
+ if(typeof window.DTK_LOGO==='string'&&window.DTK_LOGO)o.icon=window.DTK_LOGO;
+ try{if('serviceWorker' in navigator){const reg=await Promise.race([navigator.serviceWorker.ready,new Promise(r=>setTimeout(r,3000))]);if(reg&&reg.showNotification){await reg.showNotification(title,o);return}}}catch{}
+ try{const n=new Notification(title,o);n.onclick=()=>{focus();go('box')}}catch{}
+};
+async function poll(){
+ if(!D||!D.zoho)return;
+ try{
+  if(!MB.f.length){MB.f=await api('admin/mail/folders');MB.cur=(MB.f.find(f=>/inbox/i.test(f.type))||MB.f[0]||{}).id||''}
+  const inbox=(MB.f.find(f=>/inbox/i.test(f.type))||MB.f[0]||{}).id;if(!inbox)return;
+  const r=await api('admin/mail/list?folder='+inbox+'&start=1'),un=r.messages.filter(m=>m.unread);
+  UN=un.length;
+  if(SEEN){const nw=un.filter(m=>!SEEN.has(m.id));if(nw.length&&notifOK())ping(nw)}
+  SEEN=new Set([...(SEEN||[]),...r.messages.map(m=>m.id)]);
+  badge();
+ }catch(e){}
+}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll()});
+if('serviceWorker' in navigator)navigator.serviceWorker.addEventListener('message',e=>{if(e.data&&e.data.box){focus();go('box')}});
+window.notifOn=async()=>{try{const p=await Notification.requestPermission();if(p==='granted'){try{localStorage.mbn='1'}catch{}if('serviceWorker' in navigator)await navigator.serviceWorker.register('/sw.js').catch(()=>{})}const nb=$('#nb');if(nb)nb.innerHTML=notifBar();if(p==='granted')ping([{name:'DidjoTheSHOP',from:'',subject:'Les notifications de la boîte mail sont activées ✅'}])}catch(e){note(e.message,1)}};
+window.notifOff=()=>{try{localStorage.mbn=''}catch{}const nb=$('#nb');if(nb)nb.innerHTML=notifBar()};
 
 /* ---- Actions ---- */
 window.flt=v=>{v=v.trim().toLowerCase();document.querySelectorAll('tr[data-s]').forEach(r=>r.style.display=r.dataset.s.includes(v)?'':'none')};
