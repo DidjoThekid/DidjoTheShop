@@ -1,53 +1,177 @@
 <!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Admin · DidjoTheSHOP</title><link rel="stylesheet" href="/style.css">
 <style>
 main{max-width:none;padding:20px clamp(12px,3vw,40px) 80px}.form{max-width:none}.fgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:0 16px}.tabs{flex-wrap:wrap}.tw{overflow-x:auto}
+.tabs button{display:inline-flex;align-items:center}.ti{margin-right:6px}
 .tb{display:flex;flex-wrap:wrap;gap:6px;padding:8px;border:1px solid var(--line);border-bottom:0;border-radius:10px 10px 0 0;background:var(--card);position:sticky;top:60px;z-index:4}
 .tb button,.tb select,.tb input{width:auto;padding:6px 10px;font-size:.9rem}.tb input[type=color]{padding:2px;height:34px;width:42px}
-#ed{min-height:max(260px,calc(100vh - 430px));border:1px solid var(--line);border-radius:0 0 10px 10px;padding:14px;background:#fff;color:#142033;overflow:auto;line-height:1.5}#ed a{color:#2456f5}
+.ed{min-height:max(220px,calc(100vh - 430px));border:1px solid var(--line);border-radius:0 0 10px 10px;padding:14px;background:#fff;color:#142033;overflow:auto;line-height:1.5}.ed a{color:#2456f5}
+/* Boîte mail */
+.mb{display:grid;grid-template-columns:190px 370px 1fr;gap:12px;height:calc(100vh - 190px);min-height:480px}
+.mb>div{border:1px solid var(--line);border-radius:12px;background:var(--card);overflow:auto}
+.mi{padding:10px 12px;border-bottom:1px solid var(--line);cursor:pointer}.mi:hover{background:rgba(127,127,127,.1)}.mi.act,.mi.sel{background:rgba(127,127,127,.18)}.mi .s{font-weight:400}.mi.u .s,.mi.act .s{font-weight:800}
+.mf{width:100%;min-height:55vh;border:1px solid var(--line);border-radius:8px;background:#fff}
+.mb .row{display:flex;gap:8px;flex-wrap:wrap}.mb .row button{width:auto}
+html:not(.m) .mfs,html:not(.m) .mback{display:none}
+/* Version téléphone (détectée automatiquement, ou choisie avec le bouton en haut) */
+html.m main{padding:12px 12px 110px}
+html.m .tabs{position:fixed;left:0;right:0;bottom:0;z-index:30;flex-wrap:nowrap;overflow-x:auto;gap:4px;padding:6px 6px calc(6px + env(safe-area-inset-bottom));background:var(--card);border-top:1px solid var(--line)}
+html.m .tabs button{flex:0 0 auto;width:auto;min-width:66px;min-height:52px;padding:4px 8px;font-size:11px;flex-direction:column;justify-content:center;gap:2px;white-space:nowrap}
+html.m .ti{font-size:20px;margin:0}
+html.m table,html.m tbody,html.m tr,html.m td{display:block;width:100%}
+html.m tr{border:1px solid var(--line);border-radius:12px;padding:10px;margin-bottom:10px;background:var(--card)}
+html.m td{padding:6px 0;border:0}
+html.m main button,html.m main select,html.m main input:not([type=checkbox]):not([type=color]),html.m main textarea{min-height:46px;font-size:16px;width:100%;box-sizing:border-box}
+html.m main .tabs button{width:auto}
+html.m .tb button,html.m .tb select{width:auto;min-height:40px}
+html.m .tb{top:0}
+html.m .mb{display:block;height:auto;min-height:0}
+html.m .mb>div{display:none;max-height:none}
+html.m .mb[data-v=list]>#mbl,html.m .mb[data-v=read]>#mbr{display:block}
+html.m .mb .row button{width:100%}
+html.m .mf{min-height:60vh}
+html.m .ed{min-height:200px}
+html.m header{flex-wrap:wrap}
 </style></head><body>
-<header><b>Admin DidjoTheSHOP</b><a href="/">Voir la boutique</a></header><main id="v">Chargement…</main>
+<header><b>Admin DidjoTheSHOP</b><a href="/">Voir la boutique</a><a href="#" id="dv" onclick="cyc();return false"></a></header><main id="v">Chargement…</main>
 <script>
 const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),eur=c=>(c/100).toFixed(2).replace('.',',')+' €';
 const api=async(p,b)=>{const r=await fetch('/api/'+p,b?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}:{});const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||'Erreur');return j};
-const ST=['En préparation','Expédié','En cours de livraison','Livré'];let D,tab='orders',imgs=[],MT=false;
+const ST=['En préparation','Expédié','En cours de livraison','Livré'];let D,RQ=[],tab='orders',imgs=[],clogo='',MT=false,first=true;
+const PEND="⏳ Demande envoyée : l'administrateur principal doit l'accepter (il a reçu un mail).";
+const note=(t,err)=>{const e=$('#m');if(e)e.innerHTML=`<span class="${err?'err':'ok'}">${esc(t)}</span>`};
 const showErr=m=>{const e=$('#m')||$('#v');if(e)e.innerHTML='<span class="err">Erreur : '+esc(m)+'</span>'};
 window.addEventListener('error',e=>showErr(e.message));
 window.addEventListener('unhandledrejection',e=>showErr(e.reason&&e.reason.message||e.reason));
+
+/* ---- Détection de l'appareil : téléphone ou PC ---- */
+const getAv=()=>{try{return localStorage.av||''}catch{return ''}};
+const isM=()=>{const f=getAv();if(f)return f==='m';return matchMedia('(max-width:820px)').matches||(matchMedia('(pointer:coarse)').matches&&innerWidth<=1100)||/Android.+Mobile|iPhone|iPod/i.test(navigator.userAgent)};
+const applyView=()=>{document.documentElement.classList.toggle('m',isM());const f=getAv();$('#dv').textContent=f==='m'?'📱 Téléphone':f==='d'?'🖥️ PC':'🔄 Auto ('+(isM()?'📱':'🖥️')+')'};
+window.cyc=()=>{const n={'':'m',m:'d',d:''}[getAv()];try{localStorage.av=n}catch{}applyView()};
+applyView();addEventListener('resize',applyView);
+
 const TB=[['bold','<b>G</b>','Gras'],['italic','<i>I</i>','Italique'],['underline','<u>S</u>','Souligné'],['strikeThrough','<s>B</s>','Barré'],['justifyLeft','⬅','Aligner à gauche'],['justifyCenter','↔','Centrer'],['justifyRight','➡','Aligner à droite'],['insertUnorderedList','• Liste','Liste à puces'],['insertOrderedList','1. Liste','Liste numérotée'],['formatBlock:blockquote','❝ Citation','Citation'],['insertHorizontalRule','— Ligne','Ligne de séparation'],['removeFormat','✕ Effacer','Effacer la mise en forme'],['undo','↶','Annuler'],['redo','↷','Rétablir']];
-async function load(){try{D=await api('admin/data')}catch(e){return $('#v').innerHTML='<h1>Accès refusé</h1><p>Connecte-toi avec le compte administrateur sur <a href="/login?next=/admin">la page de connexion</a>.</p>'}try{MT=!!(await api('maintenance')).on}catch{}draw()}
-const T=(k,l)=>`<button class="${tab==k?'on':'alt'}" onclick="tab='${k}';draw()">${l}</button>`;
-const rows=(list,arch)=>`<p><input id="q" placeholder="Rechercher : code de suivi, nom du compte, email, n° de commande" oninput="flt(this.value)"></p><div class="tw"><table>${list.map(o=>`<tr data-s="${esc([o.id,o.email,o.name,o.tracking].join(' ').toLowerCase())}"><td><b>${o.id}</b><br><b>${esc(o.name)}</b><br><span class="mut">${esc(o.email)}</span><br>${eur(o.total)}<br>${o.paid?'<span class="ok">Payée</span>':'<span class="err">Non payée</span>'}</td><td class="mut">${o.items.map(i=>esc(i.name)+(i.virtual?' (virtuel)':'')+' ×'+i.qty).join('<br>')}<br>${esc(o.address)}</td><td>${arch?`<b>Livrée</b>${o.tracking?`<br><span class="mut">Suivi : ${esc(o.tracking)}</span>`:''}<br><button class="red" onclick="delo('${o.id}')">Supprimer définitivement</button>`:`<select id="s${o.id}">${ST.map(s=>`<option ${s==o.status?'selected':''}>${s}</option>`).join('')}</select><input id="t${o.id}" placeholder="Code de suivi" value="${esc(o.tracking)}"><button onclick="ord('${o.id}')">Enregistrer</button>`}</td></tr>`).join('')||'<tr><td>Aucune commande.</td></tr>'}</table></div>`;
-function draw(){$('#v').innerHTML=`<div class="tabs">${T('orders','Commandes')}${T('archive','Archives')}${T('products','Articles')}${T('users','Clients & Employés')}${T('sellers','Vendeurs')}${T('mail','Mail')}${T('set','Livraison')}${T('maint',MT?'🔴 Maintenance':'Maintenance')}</div><p id="m"></p>`+({
+const tbar=()=>`<div class="tb"><select onchange="sz(this.value);this.value=''" title="Taille du texte"><option value="">Taille</option><option value="2">Petit</option><option value="3">Normal</option><option value="5">Grand</option><option value="6">Très grand</option><option value="h">Titre</option><option value="p">Paragraphe</option></select>${TB.map(([c,l,t])=>`<button type="button" class="alt" title="${t}" onmousedown="event.preventDefault()" onclick="fmt('${c}')">${l}</button>`).join('')}<button type="button" class="alt" onmousedown="event.preventDefault()" onclick="lnk()">🔗 Lien</button><input type="color" value="#142033" title="Couleur du texte" onchange="fmt('foreColor',this.value)"></div>`;
+const fdate=t=>t?new Date(t).toLocaleString('fr-FR',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):'';
+const addr=s=>(String(s||'').match(/[^\s<>&;"',]+@[^\s<>&;"',]+/)||[''])[0];
+
+const isAdm=()=>D&&D.role==='admin';
+const pendN=()=>RQ.filter(r=>r.status==='pending').length;
+const TABS=()=>isAdm()
+ ?[['orders','Commandes','📦'],['archive','Archives','🗂️'],['products','Articles','🛍️'],['box','Boîte mail','📥'],['mail','Envoi mail','✉️'],['valid','Validations'+(pendN()?' ('+pendN()+')':''),'✅'],['users','Comptes','👥'],['sellers','Vendeurs','🏪'],['set','Livraison','🚚'],['maint',MT?'Maintenance 🔴':'Maintenance','🛠️']]
+ :[['orders','Commandes','📦'],['archive','Archives','🗂️'],['products','Articles','🛍️'],['box','Boîte mail','📥'],['mail','Envoi mail','✉️'],['mine','Mes demandes','⏳'],['set','Livraison','🚚']];
+async function load(){
+ try{D=await api('admin/data')}catch(e){return $('#v').innerHTML='<h1>Accès refusé</h1><p>Connecte-toi avec un compte administrateur ou employé sur <a href="/login?next=/admin">la page de connexion</a>.</p>'}
+ try{RQ=await api('admin/requests')}catch{RQ=[]}
+ try{if(isAdm())MT=!!(await api('maintenance')).on}catch{}
+ if(first){first=false;if(location.hash==='#validations'&&isAdm())tab='valid'}
+ if(!TABS().some(t=>t[0]===tab))tab='orders';
+ draw()}
+window.go=k=>{tab=k;draw()};
+const rows=(list,arch)=>`<p><input id="q" placeholder="Rechercher : code de suivi, nom du compte, email, n° de commande" oninput="flt(this.value)"></p><div class="tw"><table>${list.map(o=>`<tr data-s="${esc([o.id,o.email,o.name,o.tracking].join(' ').toLowerCase())}"><td><b>${o.id}</b><br><b>${esc(o.name)}</b><br><span class="mut">${esc(o.email)}</span><br>${eur(o.total)}<br>${o.paid?'<span class="ok">Payée</span>':'<span class="err">Non payée</span>'}</td><td class="mut">${o.items.map(i=>esc(i.name)+(i.virtual?' (virtuel)':'')+' ×'+i.qty).join('<br>')}<br>${esc(o.address)}</td><td>${arch?`<b>Livrée</b>${o.tracking?`<br><span class="mut">Suivi : ${esc(o.tracking)}</span>`:''}${isAdm()?`<br><button class="red" onclick="delo('${o.id}')">Supprimer définitivement</button>`:''}`:`<select id="s${o.id}">${ST.map(s=>`<option ${s==o.status?'selected':''}>${s}</option>`).join('')}</select><input id="t${o.id}" placeholder="Code de suivi" value="${esc(o.tracking)}"><button onclick="ord('${o.id}')">Enregistrer</button>`}</td></tr>`).join('')||'<tr><td>Aucune commande.</td></tr>'}</table></div>`;
+
+const RS={pending:'⏳ En attente',approved:'✅ Acceptée',rejected:'❌ Refusée'};
+const detail=r=>{const p=r.payload||{};let t='',im='';
+ if(r.path==='admin/product'&&!p.del){t=`${p.name||''} · ${p.price} €${p.virtual?' · virtuel':''}${p.collab?' · 🤝 collab avec '+p.collab.brand+(p.collab.email?' ('+p.collab.email+')':''):''}\n${p.desc||''}`;const u=(p.images&&p.images[0])||p.image;if(/^https:/.test(u||''))im=`<img src="${esc(u)}" width="64" alt="" style="border-radius:8px;margin-top:6px;display:block">`}
+ else if(r.path.startsWith('admin/mail')&&p.subject!==undefined)t=`À : ${p.other||p.to||'tous les clients'}\nObjet : ${p.subject}\n${String(p.html||'').replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').slice(0,400)}`;
+ else if(r.path==='admin/order')t=`Statut : ${p.status} · suivi : ${p.tracking||'—'}`;
+ return (t||im)?`<div class="mut" style="white-space:pre-line;margin-top:6px">${esc(t.slice(0,600))}</div>${im}`:''};
+const rqTable=adm=>{const L=[...RQ].sort((a,b)=>(a.status==='pending'?0:1)-(b.status==='pending'?0:1)||b.date-a.date);
+ return `<div class="tw"><table>${L.map(r=>`<tr><td><b>${esc(r.label)}</b><br><span class="mut">${adm?esc(r.byName)+' · ':''}${fdate(r.date)}</span>${adm?detail(r):''}</td><td><b>${RS[r.status]||r.status}</b>${r.reason?`<br><span class="mut">Motif : ${esc(r.reason)}</span>`:''}</td><td>${adm&&r.status==='pending'?`<button onclick="dec('${r.id}',true)">Accepter</button><button class="red" onclick="dec('${r.id}',false)">Refuser</button>`:''}</td></tr>`).join('')||'<tr><td>Aucune demande.</td></tr>'}</table></div>`};
+
+const VIEWS={
 orders:()=>rows(D.orders.filter(o=>!o.archived),false),
 archive:()=>rows(D.orders.filter(o=>o.archived),true),
-products:()=>`<div class="card form"><h2 style="margin-top:0">Nouvel article</h2><div class="fgrid"><div><label>Nom</label><input id="pn"></div><div><label>Prix (€)</label><input id="pp" type="number" step="0.01"></div></div><label>Type d'article</label><select id="pk"><option value="0">Réel (livraison, paiement comme d'habitude)</option><option value="1">Virtuel (pas de frais de livraison, non remboursable)</option></select><label>Description</label><textarea id="pd" rows="4"></textarea><label><input id="ps" type="checkbox" style="width:auto"> Abonnement (prix par mois)</label><label>Photos (plusieurs possibles, la 1re = couverture)</label><input type="file" id="pf" accept="image/*" multiple onchange="up(this)"><p id="pv" style="display:flex;gap:8px;flex-wrap:wrap">${imgs.map(u=>`<img src="${esc(u)}" width="72" style="border-radius:8px" alt="">`).join('')}</p><p><button onclick="prod()">Ajouter l'article</button></p></div><h2>Articles en ligne</h2><div class="tw"><table>${D.products.map(p=>`<tr><td>${p.image?`<img src="${esc(p.image)}" width="56" alt="">`:''}</td><td><b>${esc(p.name)}</b><br>${eur(p.price)}${p.sub?' / mois':''}<br><a href="/p/${p.id}" target="_blank">Voir la page</a></td><td><select onchange="kind('${p.id}',this.value)"><option value="0" ${p.virtual?'':'selected'}>Réel</option><option value="1" ${p.virtual?'selected':''}>Virtuel</option></select></td><td><button class="red" onclick="del('${p.id}')">Supprimer</button></td></tr>`).join('')}</table></div>`,
+products:()=>`<div class="card form"><h2 style="margin-top:0">Nouvel article</h2><div class="fgrid"><div><label>Nom</label><input id="pn"></div><div><label>Prix (€)</label><input id="pp" type="number" step="0.01"></div></div><label>Type d'article</label><select id="pk"><option value="0">Réel (livraison, paiement comme d'habitude)</option><option value="1">Virtuel (pas de frais de livraison, non remboursable)</option></select><label>Description</label><textarea id="pd" rows="4"></textarea><label><input id="ps" type="checkbox" style="width:auto"> Abonnement (prix par mois)</label><label>Photos (plusieurs possibles, la 1re = couverture)</label><input type="file" id="pf" accept="image/*" multiple onchange="up(this)"><p id="pv" style="display:flex;gap:8px;flex-wrap:wrap">${imgs.map(u=>`<img src="${esc(u)}" width="72" style="border-radius:8px" alt="">`).join('')}</p>
+<label><input id="pc" type="checkbox" style="width:auto" onchange="$('#pcb').style.display=this.checked?'block':'none'"> 🤝 C'est une collaboration avec une marque (facultatif)</label>
+<div id="pcb" style="display:none"><div class="fgrid"><div><label>Nom de la marque</label><input id="pcn"></div><div><label>Adresse mail de la marque (facultatif)</label><input id="pce" type="email"></div></div><label>Logo de la marque</label><input type="file" id="pcf" accept="image/*" onchange="upLogo(this)"><p id="pcv">${clogo?`<img src="${esc(clogo)}" height="56" alt="">`:''}</p></div>
+<p><button onclick="prod()">${isAdm()?"Ajouter l'article":"Proposer l'article (validation requise)"}</button></p></div><h2>Articles en ligne</h2><div class="tw"><table>${D.products.map(p=>`<tr><td>${p.image?`<img src="${esc(p.image)}" width="56" alt="">`:''}</td><td><b>${esc(p.name)}</b><br>${eur(p.price)}${p.sub?' / mois':''}${p.collab?`<br>🤝 <b>${esc(p.collab.brand)}</b>${p.collab.email?` <span class="mut">${esc(p.collab.email)}</span>`:''}`:''}<br><a href="/p/${p.id}" target="_blank">Voir la page</a></td><td><select onchange="kind('${p.id}',this.value)"><option value="0" ${p.virtual?'':'selected'}>Réel</option><option value="1" ${p.virtual?'selected':''}>Virtuel</option></select><button class="alt" onclick="editCollab('${p.id}')">🤝 ${p.collab?'Modifier la collab':'Collaboration'}</button></td><td><button class="red" onclick="del('${p.id}')">Supprimer</button></td></tr>`).join('')}</table></div>`,
+box:()=>D.zoho?`<div class="mb" id="mb" data-v="list"><div id="mbf"></div><div id="mbl"></div><div id="mbr"><p class="mut" style="padding:14px">Choisis un message à gauche.</p></div></div>`:`<div class="card"><h2 style="margin-top:0">Boîte mail Zoho non connectée</h2><p>Ajoute ces variables dans Vercel (Settings → Environment Variables) puis redéploie : <b>ZOHO_CLIENT_ID</b>, <b>ZOHO_CLIENT_SECRET</b>, <b>ZOHO_REFRESH_TOKEN</b> (et <b>ZOHO_DC</b> si ton Zoho n'est pas en .eu).</p></div>`,
+mail:()=>`<div class="card form"><h2 style="margin-top:0">Envoyer un mail aux clients (Resend)</h2><div class="fgrid"><div><label>Destinataire</label><select id="mt"><option value="all">Tous les clients non désabonnés (${D.users.filter(u=>!u.banned&&!u.unsubscribed).length})</option>${D.users.filter(u=>!u.banned).map(u=>`<option value="${esc(u.email)}">${esc(u.name)} · ${esc(u.email)}${u.employee?' 👤 Employé DTK':''}${u.unsubscribed?' ⛔ Désabonné':''}</option>`).join('')}</select></div><div><label>Ou une autre adresse (facultatif)</label><input id="mo" type="email" placeholder="client@exemple.fr"></div></div><label>Objet</label><input id="ms"><label>Message</label>${tbar()}<div id="ed" class="ed" contenteditable="true" spellcheck="true"></div><p><button onclick="sendMail()">${isAdm()?'Envoyer le mail':'Envoyer pour validation'}</button></p><p class="mut">Chaque destinataire reçoit son propre mail. Maximum 100 destinataires par envoi. Les utilisateurs désabonnés sont exclus de l'envoi "Tous les clients".</p></div>`,
+valid:()=>`<h2>Demandes des employés</h2>`+rqTable(true),
+mine:()=>`<h2>Mes demandes</h2><p class="mut">Chaque action (article, mail, statut de commande, livraison…) doit être acceptée par l'administrateur principal avant d'être appliquée.</p>`+rqTable(false),
 users:()=>`<div class="card form" style="margin-bottom:16px"><h2 style="margin-top:0">Créer un compte employé Team DTK</h2><div class="fgrid"><div><label>Nom</label><input id="en"></div><div><label>Email</label><input id="ee" type="email"></div></div><p><button onclick="createEmp()">Créer le compte</button></p><p id="em-res" class="mut"></p></div><div class="tw"><table>${D.users.map(u=>`<tr><td><b>${esc(u.name)}</b>${u.employee?' <span style="color:#4f46e5;font-size:0.9em">👤 Employé DTK</span>':''}${u.unsubscribed?' <span style="color:#dc2626;font-size:0.9em">⛔ Désabonné</span>':''}<br><span class="mut">${esc(u.email)}</span></td><td style="display:flex;gap:8px;flex-wrap:wrap"><button class="${u.employee?'alt':''}" style="${u.employee?'':'background:#4f46e5;color:#fff'}" onclick="toggleEmp('${u.id}',${!u.employee})">${u.employee?'Retirer Employé':'Marquer Employé'}</button><button class="${u.banned?'alt':'red'}" onclick="ban('${u.id}',${!u.banned})">${u.banned?'Débannir':'Bannir'}</button><button class="red" onclick="delUser('${u.id}')">Supprimer</button></td></tr>`).join('')}</table></div>`,
 sellers:()=>`<div class="tw"><table>${D.users.filter(u=>u.seller).map(u=>`<tr><td><b>${esc(u.seller.shop)}</b> · ${esc(u.name)}<br><span class="mut">${esc(u.email)} · ${u.seller.type==='company'?'Entreprise':'Particulier'} · SIRET ${esc(u.seller.siret)}</span><br>${esc(u.seller.desc||'')}</td><td><b>${u.seller.status==='pending'?'En attente':u.seller.status==='approved'?'Accepté':'Refusé'}</b></td><td>${u.seller.status!=='approved'?`<button onclick="sel('${u.id}',true)">Accepter</button> `:''}${u.seller.status!=='rejected'?`<button class="red" onclick="sel('${u.id}',false)">Refuser</button>`:''}</td></tr>`).join('')||'<tr><td>Aucune demande vendeur.</td></tr>'}</table></div>`,
-mail:()=>`<div class="card form"><div class="fgrid"><div><label>Destinataire</label><select id="mt"><option value="all">Tous les clients non désabonnés (${D.users.filter(u=>!u.banned&&!u.unsubscribed).length})</option>${D.users.filter(u=>!u.banned).map(u=>`<option value="${esc(u.email)}">${esc(u.name)} · ${esc(u.email)}${u.employee?' 👤 Employé DTK':''}${u.unsubscribed?' ⛔ Désabonné':''}</option>`).join('')}</select></div><div><label>Ou une autre adresse (facultatif)</label><input id="mo" type="email" placeholder="client@exemple.fr"></div></div><label>Objet</label><input id="ms"><label>Message</label>
-<div class="tb"><select onchange="sz(this.value);this.value=''" title="Taille du texte"><option value="">Taille</option><option value="2">Petit</option><option value="3">Normal</option><option value="5">Grand</option><option value="6">Très grand</option><option value="h">Titre</option><option value="p">Paragraphe</option></select>${TB.map(([c,l,t])=>`<button type="button" class="alt" title="${t}" onmousedown="event.preventDefault()" onclick="fmt('${c}')">${l}</button>`).join('')}<button type="button" class="alt" onmousedown="event.preventDefault()" onclick="lnk()">🔗 Lien</button><input type="color" value="#142033" title="Couleur du texte" onchange="fmt('foreColor',this.value)"></div>
-<div id="ed" contenteditable="true" spellcheck="true"></div><p><button onclick="sendMail()">Envoyer le mail</button></p><p class="mut">Chaque destinataire reçoit son propre mail. Maximum 100 destinataires par envoi. Les utilisateurs désabonnés sont exclus de l'envoi "Tous les clients".</p></div>`,
 set:()=>`<div class="form"><label>Frais de livraison (€)</label><input id="sh" type="number" step="0.01" value="${(D.shipping/100).toFixed(2)}"><p><button onclick="ship()">Enregistrer</button></p><p class="mut">Les articles virtuels n'ont jamais de frais de livraison.</p></div>`,
-maint:()=>`<div class="card form"><h2 style="margin-top:0">Mode maintenance</h2><p>${MT?'🔴 <b>Maintenance ACTIVÉE</b> : les visiteurs voient « Maintenance en cours ». Seuls les admins peuvent utiliser le site.':'🟢 <b>Site en ligne</b>'}</p><p><button class="${MT?'':'red'}" onclick="setMaint(${!MT})">${MT?'Terminer la maintenance':'Démarrer la maintenance'}</button></p><p class="mut">Au démarrage et à la fin, un mail est envoyé à tous les clients (comptes non bannis et non désabonnés). L'envoi peut prendre quelques secondes, ne ferme pas la page.</p></div>`}[tab])()}
-const run=async(f,msg)=>{try{await f();await load();$('#m').innerHTML=`<span class="ok">${msg}</span>`}catch(e){$('#m').innerHTML=`<span class="err">${esc(e.message)}</span>`}};
-let lastR=null;document.addEventListener('selectionchange',()=>{const s=getSelection(),ed=$('#ed');if(ed&&s.rangeCount&&ed.contains(s.anchorNode))lastR=s.getRangeAt(0).cloneRange()});
-const back=()=>{const ed=$('#ed');ed.focus();if(lastR){const s=getSelection();s.removeAllRanges();s.addRange(lastR)}};
-window.fmt=(c,v)=>{back();if(c.startsWith('formatBlock:'))document.execCommand('formatBlock',false,c.split(':')[1]);else document.execCommand(c,false,v)};
+maint:()=>`<div class="card form"><h2 style="margin-top:0">Mode maintenance</h2><p>${MT?'🔴 <b>Maintenance ACTIVÉE</b> : les visiteurs voient « Maintenance en cours ». Seuls les admins peuvent utiliser le site.':'🟢 <b>Site en ligne</b>'}</p><p><button class="${MT?'':'red'}" onclick="setMaint(${!MT})">${MT?'Terminer la maintenance':'Démarrer la maintenance'}</button></p><p class="mut">Au démarrage et à la fin, un mail est envoyé à tous les clients (comptes non bannis et non désabonnés). L'envoi peut prendre quelques secondes, ne ferme pas la page.</p></div>`};
+function draw(){
+ $('#v').innerHTML=`<div class="tabs">${TABS().map(([k,l,i])=>`<button class="${tab==k?'on':'alt'}" onclick="go('${k}')"><span class="ti">${i}</span><span class="tl">${l}</span></button>`).join('')}</div><p id="m"></p>`+(VIEWS[tab]||VIEWS.orders)();
+ if(tab==='box'&&D.zoho)mbInit();
+}
+const run=async(f,msg)=>{try{const r=await f();await load();const e=$('#m');if(e)e.innerHTML=`<span class="ok">${r&&r.pending?PEND:esc(msg)}</span>`}catch(e){const x=$('#m');if(x)x.innerHTML=`<span class="err">${esc(e.message)}</span>`}};
+
+/* ---- Éditeur de texte riche (plusieurs éditeurs possibles) ---- */
+let lastR=null,lastE=null;
+document.addEventListener('selectionchange',()=>{const s=getSelection();if(!s.rangeCount)return;const n=s.anchorNode,el=n&&(n.nodeType===1?n:n.parentElement),ed=el&&el.closest&&el.closest('.ed');if(ed){lastE=ed;lastR=s.getRangeAt(0).cloneRange()}});
+const back=()=>{if(!lastE||!document.contains(lastE))return false;lastE.focus();if(lastR){const s=getSelection();s.removeAllRanges();s.addRange(lastR)}return true};
+window.fmt=(c,v)=>{if(!back())return;if(c.startsWith('formatBlock:'))document.execCommand('formatBlock',false,c.split(':')[1]);else document.execCommand(c,false,v)};
 window.sz=v=>{if(!v)return;if(v==='h')fmt('formatBlock:h2');else if(v==='p')fmt('formatBlock:p');else fmt('fontSize',v)};
-window.lnk=()=>{back();const s=getSelection(),has=s&&!s.isCollapsed,saved=lastR;const u=prompt('Adresse du lien (https://…)');if(!u)return;if(!/^(https?:\/\/|mailto:)/i.test(u))return alert('Le lien doit commencer par https:// ou mailto:');lastR=saved;if(has)fmt('createLink',u);else{const t=prompt('Texte du lien');if(t)fmt('insertHTML','<a href="'+esc(u)+'">'+esc(t)+'</a>')}};
+window.lnk=()=>{if(!back())return;const s=getSelection(),has=s&&!s.isCollapsed,saved=lastR;const u=prompt('Adresse du lien (https://…)');if(!u)return;if(!/^(https?:\/\/|mailto:)/i.test(u))return alert('Le lien doit commencer par https:// ou mailto:');lastR=saved;if(has)fmt('createLink',u);else{const t=prompt('Texte du lien');if(t)fmt('insertHTML','<a href="'+esc(u)+'">'+esc(t)+'</a>')}};
+
+/* ---- Boîte mail Zoho ---- */
+let MB={f:[],cur:'',msgs:[],start:1,more:false,sel:null,cmp:null,html:null};
+const wrapMail=h=>`<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: data:; style-src 'unsafe-inline'"><base target="_blank"><body style="font-family:Arial,sans-serif;font-size:15px;margin:10px;color:#142033;word-wrap:break-word">`+h;
+async function mbInit(){
+ try{
+  if(!MB.f.length){MB.f=await api('admin/mail/folders');MB.cur=(MB.f.find(f=>/inbox/i.test(f.type))||MB.f[0]||{}).id||''}
+  MB.sel=null;MB.cmp=null;await mbList(1);
+ }catch(e){const l=$('#mbl');if(l)l.innerHTML=`<p class="err" style="padding:14px">${esc(e.message)}</p>`}
+}
+async function mbList(s){
+ MB.start=s||1;const l=$('#mbl');if(l&&MB.start===1)l.innerHTML='<p class="mut" style="padding:14px">Chargement…</p>';
+ const r=await api('admin/mail/list?folder='+MB.cur+'&start='+MB.start);
+ MB.msgs=MB.start===1?r.messages:MB.msgs.concat(r.messages);MB.more=r.messages.length>=40;mbDraw();
+}
+function mbDraw(){
+ const b=$('#mb');if(!b)return;
+ b.dataset.v=(MB.sel!=null||MB.cmp)?'read':'list';
+ $('#mbf').innerHTML=MB.f.map(f=>`<div class="mi ${f.id===MB.cur?'act':''}" onclick="mbF('${f.id}')"><span class="s">${esc(f.name)}</span>${f.unread?` <span class="mut">(${f.unread})</span>`:''}</div>`).join('')+`<div style="padding:10px"><button onclick="mbNew()">✏️ Nouveau mail</button></div>`;
+ $('#mbl').innerHTML=`<div style="padding:8px;display:flex;gap:8px"><select class="mfs" onchange="mbF(this.value)">${MB.f.map(f=>`<option value="${f.id}" ${f.id===MB.cur?'selected':''}>${esc(f.name)}</option>`).join('')}</select><button class="alt" style="width:auto" onclick="mbList(1)">↻</button><button class="mfs" style="width:auto" onclick="mbNew()">✏️</button></div>`+(MB.msgs.map((m,i)=>`<div class="mi ${m.unread?'u':''} ${MB.sel===i?'sel':''}" onclick="mbOpen(${i})"><span class="s">${esc(m.name||m.from)}</span> <span class="mut" style="float:right">${fdate(m.time)}</span><br><span class="s">${esc(m.subject)}</span>${m.att?' 📎':''}<br><span class="mut">${esc(m.summary.slice(0,90))}</span></div>`).join('')||'<p class="mut" style="padding:14px">Aucun message.</p>')+(MB.more?`<div style="padding:10px"><button class="alt" onclick="mbList(${MB.start+40})">Charger plus</button></div>`:'');
+ const r=$('#mbr');
+ if(MB.cmp){const c=MB.cmp;r.innerHTML=`<div style="padding:12px"><button class="alt mback" style="width:auto" onclick="MB.cmp=null;mbDraw()">← Retour</button><h3>${c.rep?'Répondre':'Nouveau mail'}</h3><label>À</label><input id="cx-t" type="email" value="${esc(c.to)}"><label>Objet</label><input id="cx-s" value="${esc(c.subject)}">${tbar()}<div id="cx-e" class="ed" contenteditable="true" spellcheck="true"></div><p><button onclick="mbSend()">${isAdm()?'Envoyer':'Envoyer pour validation'}</button></p></div>`}
+ else if(MB.sel!=null&&MB.msgs[MB.sel]){const m=MB.msgs[MB.sel];r.innerHTML=`<div style="padding:12px"><button class="alt mback" style="width:auto" onclick="MB.sel=null;mbDraw()">← Retour</button><h3 style="margin:.4em 0">${esc(m.subject)}</h3><p class="mut">De : ${esc(m.name)} &lt;${esc(m.from)}&gt;<br>${fdate(m.time)}</p><p class="row"><button onclick="mbReply()">↩ Répondre</button><button class="red" onclick="mbDel()">🗑 Supprimer</button></p>${MB.html==null?'<p class="mut">Chargement…</p>':`<iframe class="mf" sandbox="allow-popups allow-popups-to-escape-sandbox" srcdoc="${esc(wrapMail(MB.html))}"></iframe>`}</div>`}
+ else r.innerHTML='<p class="mut" style="padding:14px">Choisis un message dans la liste.</p>';
+}
+window.mbF=async id=>{MB.cur=id;MB.sel=null;MB.cmp=null;try{await mbList(1)}catch(e){note(e.message,1)}};
+window.mbOpen=async i=>{const m=MB.msgs[i];MB.sel=i;MB.cmp=null;MB.html=null;mbDraw();
+ try{MB.html=(await api(`admin/mail/read?folder=${m.folder}&id=${m.id}`)).html;m.unread=false}catch(e){MB.html='<p>'+esc(e.message)+'</p>'}
+ if(MB.sel===i)mbDraw()};
+window.mbNew=()=>{MB.cmp={to:'',subject:'',rep:null};mbDraw()};
+window.mbReply=()=>{const m=MB.msgs[MB.sel];MB.cmp={to:addr(m.from),subject:/^re:/i.test(m.subject)?m.subject:'Re: '+m.subject,rep:{id:m.id,folder:m.folder}};mbDraw()};
+window.mbSend=async()=>{try{const r=await api('admin/mail/send',{to:$('#cx-t').value,subject:$('#cx-s').value,html:$('#cx-e').innerHTML,replyTo:MB.cmp.rep});MB.cmp=null;note(r.pending?PEND:'Mail envoyé');mbDraw();if(!r.pending)setTimeout(()=>mbList(1).catch(()=>{}),1500);RQ=await api('admin/requests').catch(()=>RQ)}catch(e){note(e.message,1)}};
+window.mbDel=async()=>{const m=MB.msgs[MB.sel];if(!confirm('Supprimer ce mail ?'))return;try{const r=await api('admin/mail/delete',{folder:m.folder,id:m.id});if(r.pending)note(PEND);else{MB.msgs.splice(MB.sel,1);MB.sel=null;note('Mail supprimé')}mbDraw()}catch(e){note(e.message,1)}};
+
+/* ---- Actions ---- */
 window.flt=v=>{v=v.trim().toLowerCase();document.querySelectorAll('tr[data-s]').forEach(r=>r.style.display=r.dataset.s.includes(v)?'':'none')};
 window.ord=id=>run(()=>api('admin/order',{id,status:$('#s'+id).value,tracking:$('#t'+id).value}),'Commande mise à jour, le client est prévenu par mail');
 window.delo=id=>confirm('Supprimer définitivement cette commande ?')&&run(()=>api('admin/order-delete',{id}),'Commande supprimée');
-window.prod=()=>run(async()=>{await api('admin/product',{name:$('#pn').value,desc:$('#pd').value,price:$('#pp').value,sub:$('#ps').checked,virtual:$('#pk').value==='1',images:imgs});imgs=[]},'Article ajouté');
+const b64=f=>new Promise(r=>{const x=new FileReader;x.onload=()=>r(x.result.split(',')[1]);x.readAsDataURL(f)});
+const upOne=async f=>(await api('admin/upload',{name:f.name,type:f.type,data:await b64(f)})).url;
+window.prod=()=>run(async()=>{
+ const collab=$('#pc').checked?{brand:$('#pcn').value,logo:clogo,email:$('#pce').value}:null;
+ const r=await api('admin/product',{name:$('#pn').value,desc:$('#pd').value,price:$('#pp').value,sub:$('#ps').checked,virtual:$('#pk').value==='1',images:imgs,collab});imgs=[];clogo='';return r},'Article ajouté');
 window.kind=(id,v)=>{const p=D.products.find(x=>x.id===id);if(!p)return;run(()=>api('admin/product',{id,name:p.name,desc:p.desc,price:p.price/100,image:p.image,images:p.images,sub:p.sub,virtual:v==='1'}),'Type de l\'article mis à jour')};
+const saveCollab=(p,collab)=>run(()=>api('admin/product',{id:p.id,name:p.name,desc:p.desc,price:p.price/100,image:p.image,images:p.images,sub:p.sub,virtual:p.virtual,collab}),'Collaboration mise à jour');
+window.editCollab=async id=>{const p=D.products.find(x=>x.id===id);if(!p)return;const c=p.collab||{};
+ const brand=prompt('Nom de la marque en collaboration (laisse vide pour retirer la collaboration)',c.brand||'');if(brand===null)return;
+ if(!brand.trim())return saveCollab(p,null);
+ const email=prompt('Adresse mail de la marque (facultatif)',c.email||'');if(email===null)return;
+ let logo=c.logo||'';
+ if(!logo||confirm('Changer le logo de la marque ? (OK = choisir un nouveau fichier, Annuler = garder le logo actuel)')){
+  const f=await new Promise(r=>{const i=document.createElement('input');i.type='file';i.accept='image/*';i.onchange=()=>r(i.files[0]);i.click()});
+  if(!f)return;try{logo=await upOne(f)}catch(e){return note(e.message,1)}}
+ saveCollab(p,{brand:brand.trim(),logo,email:email.trim()})};
 window.del=id=>confirm('Supprimer cet article ?')&&run(()=>api('admin/product',{id,del:true}),'Article supprimé');
 window.ban=(id,banned)=>run(()=>api('admin/ban',{id,banned}),banned?'Compte banni':'Compte rétabli');
 window.createEmp=()=>run(()=>api('admin/user-create',{name:$('#en').value,email:$('#ee').value}),'Compte employé créé : un mail pour choisir son mot de passe lui a été envoyé');
 window.toggleEmp=(id,isEmp)=>run(()=>api('admin/user-update',{id,employee:isEmp}),isEmp?'Statut employé ajouté':'Statut employé retiré');
 window.delUser=id=>{const u=D.users.find(x=>x.id===id);if(!u)return;if(confirm(`Supprimer définitivement le compte de ${u.name} ? Cette action est irréversible.`))run(()=>api('admin/user-delete',{id}),'Compte supprimé définitivement')};
-window.sendMail=async()=>{if(!confirm('Envoyer ce mail ?'))return;try{const r=await api('admin/mail-html',{to:$('#mt').value,other:$('#mo').value,subject:$('#ms').value,html:$('#ed').innerHTML});$('#m').innerHTML=`<span class="ok">Mail envoyé (${r.sent})</span>`}catch(e){$('#m').innerHTML=`<span class="err">${esc(e.message)}</span>`}};
+window.sendMail=async()=>{if(!confirm(isAdm()?'Envoyer ce mail ?':'Envoyer ce mail pour validation ?'))return;try{const r=await api('admin/mail-html',{to:$('#mt').value,other:$('#mo').value,subject:$('#ms').value,html:$('#ed').innerHTML});note(r.pending?PEND:`Mail envoyé (${r.sent})`);RQ=await api('admin/requests').catch(()=>RQ)}catch(e){note(e.message,1)}};
 window.ship=()=>run(()=>api('admin/shipping',{shipping:$('#sh').value}),'Frais enregistrés');
 window.setMaint=async on=>{if(!confirm((on?'Démarrer':'Terminer')+' la maintenance ? Un mail sera envoyé à TOUS les clients non désabonnés.'))return;$('#m').innerHTML='Envoi des mails en cours…';try{const r=await api('admin/maintenance',{on});await load();$('#m').innerHTML=`<span class="ok">${on?'Maintenance démarrée':'Maintenance terminée'} : ${r.sent||0} mail(s) envoyé(s) sur ${r.total||0}.</span>`}catch(e){$('#m').innerHTML=`<span class="err">${esc(e.message)}</span>`}};
-window.up=async el=>{for(const f of el.files){const d=await new Promise(r=>{const x=new FileReader;x.onload=()=>r(x.result.split(',')[1]);x.readAsDataURL(f)});try{imgs.push((await api('admin/upload',{name:f.name,type:f.type,data:d})).url)}catch(e){$('#m').innerHTML=`<span class="err">${esc(e.message)}</span>`}}$('#pv').innerHTML=imgs.map(u=>`<img src="${esc(u)}" width="72" style="border-radius:8px" alt="">`).join('')};
+window.up=async el=>{for(const f of el.files){try{imgs.push(await upOne(f))}catch(e){note(e.message,1)}}$('#pv').innerHTML=imgs.map(u=>`<img src="${esc(u)}" width="72" style="border-radius:8px" alt="">`).join('')};
+window.upLogo=async el=>{const f=el.files[0];if(!f)return;try{clogo=await upOne(f);$('#pcv').innerHTML=`<img src="${esc(clogo)}" height="56" alt="">`}catch(e){note(e.message,1)}};
 window.sel=(id,approve)=>{const reason=approve?'':prompt('Motif du refus (envoyé au vendeur)');if(!approve&&reason===null)return;run(()=>api('admin/seller',{id,approve,reason}),approve?'Vendeur accepté : il peut terminer sa vérification Stripe':'Demande refusée')};
+window.dec=(id,approve)=>{let reason='';if(!approve){reason=prompt("Motif du refus (facultatif, envoyé à l'employé)");if(reason===null)return}else if(!confirm('Accepter et exécuter cette action maintenant ?'))return;run(()=>api('admin/request-decide',{id,approve,reason}),approve?'Action acceptée et exécutée, l\'employé est prévenu':'Demande refusée, l\'employé est prévenu')};
 load();
 </script><script src="/logo.js"></script><script src="/fx.js"></script></body></html>
