@@ -26,6 +26,7 @@ const collabOf=c=>{
   if(v.email&&!/^\S+@\S+\.\S+$/.test(v.email))return{err:'Adresse mail de la marque invalide'};
   return{v};
 };
+const PLUS={month:999,year:9999,base:11988};
 const pubP=p=>{if(!p||!p.collab)return p;const{email,...c}=p.collab;return{...p,collab:c}};
 
 /* ---------- Zoho Mail (API officielle, OAuth) ---------- */
@@ -110,6 +111,17 @@ async function main(req,res){
     return sent?send(200,{step:'code',email:u.email,method:'mail'}):send(502,{error:"Impossible d'envoyer le code, réessaie plus tard"});
   };
   const stripeCustomer=async u=>{if(!u.stripeId){const c=await stripe.customers.create({email:u.email,name:u.name,metadata:{userId:u.id}});u.stripeId=c.id;await wr('users',users)}return u.stripeId};
+  /* Abonnement DidjoTheSHOP Plus : statut lu chez Stripe (mis en cache 5 min) */
+  const plusRefresh=async(u,force)=>{
+    if(!stripe||!u.stripeId)return false;
+    if(!force&&u.plus&&u.plus.chk>Date.now()-3e5)return !!u.plus.active;
+    let act=null;
+    try{const l=await stripe.subscriptions.list({customer:u.stripeId,status:'all',limit:20});act=l.data.find(s=>s.metadata&&s.metadata.kind==='plus'&&['active','trialing'].includes(s.status))}
+    catch(e){console.error('Plus',e.message);return !!(u.plus&&u.plus.active)}
+    const it=act&&act.items&&act.items.data[0];
+    u.plus={active:!!act,interval:it?it.price.recurring.interval:'',until:act?((it&&it.current_period_end)||act.current_period_end||0)*1000:0,cancel:!!(act&&act.cancel_at_period_end),chk:Date.now()};
+    await wr('users',users);return u.plus.active;
+  };
   const checkout=async(o,orders)=>{
     const mode=o.items.some(i=>i.sub)?'subscription':'payment';
     const line_items=o.items.map(i=>({quantity:i.qty,price_data:{currency:'eur',unit_amount:i.price,product_data:{name:i.virtual?i.name+' (virtuel, non remboursable)':i.name},...(i.sub?{recurring:{interval:'month'}}:{})}}));
@@ -312,14 +324,27 @@ async function main(req,res){
     if(!st)return send(400,{error:'Code incorrect'});
     delete user.totp;delete user.pend;await wr('users',users);return send(200,pub(user));
   }
+  if(path==='plus/status'){
+    await plusRefresh(user,qs.get('refresh')==='1');const p=user.plus||{};
+    return send(200,{active:!!p.active,interval:p.interval||'',until:p.until||0,cancel:!!p.cancel,price:PLUS});
+  }
+  if(path==='plus/subscribe'){
+    if(!stripe)return send(500,{error:'STRIPE_SECRET_KEY manquant dans les variables Vercel'});
+    const iv=b.interval==='year'?'year':'month';
+    if(await plusRefresh(user,true))return send(400,{error:'Tu es déjà membre Plus : gère ton abonnement depuis ton compte'});
+    const s=await stripe.checkout.sessions.create({ui_mode:'hosted_page',mode:'subscription',customer:await stripeCustomer(user),client_reference_id:user.id,metadata:{kind:'plus',userId:user.id},subscription_data:{metadata:{kind:'plus',userId:user.id}},line_items:[{quantity:1,price_data:{currency:'eur',unit_amount:iv==='year'?PLUS.year:PLUS.month,recurring:{interval:iv},product_data:{name:'DidjoTheSHOP Plus – '+(iv==='year'?'annuel':'mensuel'),description:'Livraison offerte et livraison plus rapide en point relais'}}}],success_url:origin+'/?plus=ok',cancel_url:origin+'/#plus',allow_promotion_codes:true,payment_method_collection:'always'});
+    return send(200,{url:s.url});
+  }
   if(path==='orders')return send(200,(await rd('orders',[])).filter(o=>o.userId===user.id&&!o.archived).reverse());
   if(path==='order'){
     const prods=await rd('products',[]),{shipping}=await rd('settings',{shipping:0});
     const items=(b.items||[]).map(i=>{const p=prods.find(x=>x.id===i.id);return p&&{id:p.id,name:p.name,price:p.price,sub:!!p.sub,virtual:!!p.virtual,sellerId:p.sellerId||'',qty:Math.min(99,Math.max(1,i.qty|0))}}).filter(Boolean);
-    const hasReal=items.some(i=>!i.virtual),hasVirt=items.some(i=>i.virtual),ship=hasReal?shipping:0;
-    if(!items.length||(hasReal&&String(b.address||'').trim().length<10))return send(400,{error:'Panier vide ou adresse incomplète'});
+    const hasReal=items.some(i=>!i.virtual),hasVirt=items.some(i=>i.virtual);
+    const plus=await plusRefresh(user),relay=plus&&hasReal&&b.mode==='relay',ship=hasReal&&!plus?shipping:0;
+    if(!items.length||(hasReal&&!relay&&String(b.address||'').trim().length<10))return send(400,{error:'Panier vide ou adresse incomplète'});
+    if(relay&&String(b.relay||'').trim().length<8)return send(400,{error:'Indique le point relais choisi (nom et adresse)'});
     if(hasVirt&&b.acceptVirtual!==true)return send(400,{error:'Tu dois accepter que les articles virtuels ne sont pas remboursables'});
-    const o={id:'DJ'+uid().toUpperCase(),userId:user.id,email:user.email,items,shipping:ship,total:items.reduce((a,i)=>a+i.price*i.qty,0)+ship,address:String(b.address||'').slice(0,400),status:'En préparation',tracking:'',paid:false,date:Date.now(),virtualConsent:hasVirt?Date.now():0};
+    const o={id:'DJ'+uid().toUpperCase(),userId:user.id,email:user.email,items,shipping:ship,total:items.reduce((a,i)=>a+i.price*i.qty,0)+ship,address:relay?'POINT RELAIS : '+String(b.relay).trim().slice(0,350):String(b.address||'').slice(0,400),plus:plus&&hasReal,relay:!!relay,status:'En préparation',tracking:'',paid:false,date:Date.now(),virtualConsent:hasVirt?Date.now():0};
     const orders=await rd('orders',[]);orders.push(o);await wr('orders',orders);
     await mail(user.email,`Commande ${o.id} enregistrée`,`<p>Bonjour ${esc(user.name)}, ta commande <b>${o.id}</b> est enregistrée (${(o.total/100).toFixed(2)} €).</p>`);
     let url=null;
@@ -351,7 +376,7 @@ async function main(req,res){
   }
 
   /* ---------- Panel admin / employés ---------- */
-  if(path==='admin/data')return send(200,{role:admin?'admin':'employee',zoho:!!(E.ZOHO_CLIENT_ID&&E.ZOHO_REFRESH_TOKEN),products:await rd('products',[]),orders:(await rd('orders',[])).reverse().map(o=>({...o,name:users.find(u=>u.id===o.userId)?.name||''})),users:users.map(u=>({id:u.id,name:u.name,email:u.email,banned:u.banned,employee:!!u.employee,unsubscribed:!!u.unsubscribed,seller:u.seller?{status:u.seller.status,shop:u.seller.shop,type:u.seller.type,siret:admin?u.seller.siret:'',desc:admin?u.seller.desc:''}:null})),shipping:(await rd('settings',{shipping:0})).shipping});
+  if(path==='admin/data')return send(200,{role:admin?'admin':'employee',zoho:!!(E.ZOHO_CLIENT_ID&&E.ZOHO_REFRESH_TOKEN),products:await rd('products',[]),orders:(await rd('orders',[])).reverse().map(o=>({...o,name:users.find(u=>u.id===o.userId)?.name||''})),users:users.map(u=>({id:u.id,name:u.name,email:u.email,banned:u.banned,employee:!!u.employee,plus:!!(u.plus&&u.plus.active),unsubscribed:!!u.unsubscribed,seller:u.seller?{status:u.seller.status,shop:u.seller.shop,type:u.seller.type,siret:admin?u.seller.siret:'',desc:admin?u.seller.desc:''}:null})),shipping:(await rd('settings',{shipping:0})).shipping});
 
   if(path==='admin/requests'){
     const rs=(await rd('requests',[])).slice().reverse();
