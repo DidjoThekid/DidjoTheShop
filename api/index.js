@@ -27,7 +27,44 @@ const collabOf=c=>{
   return{v};
 };
 const PLUS={month:999,year:9999,base:11988};
-const pubP=p=>{if(!p||!p.collab)return p;const{email,...c}=p.collab;return{...p,collab:c}};
+const pubP=p=>{if(!p)return p;const{sellerId,...r}=p;if(r.collab){const{email,...c}=r.collab;r.collab=c}return r};
+/* Limitation de débit (en mémoire, par instance) */
+const RLM=globalThis.__rl||(globalThis.__rl=new Map());
+const limited=(k,max,win)=>{const n=Date.now(),a=(RLM.get(k)||[]).filter(t=>t>n-win);a.push(n);RLM.set(k,a);if(RLM.size>5000)RLM.clear();return a.length>max};
+/* Images : https uniquement, et fichiers réellement des images (JPG/PNG/GIF/WebP, pas de SVG) */
+const okU=u=>/^https:\/\/[^\s"'<>]{4,580}$/.test(u);
+const IMGK={jpg:x=>x[0]===255&&x[1]===216&&x[2]===255,png:x=>x[0]===137&&x[1]===80&&x[2]===78&&x[3]===71,gif:x=>x.slice(0,3).toString()==='GIF',webp:x=>x.slice(0,4).toString()==='RIFF'&&x.slice(8,12).toString()==='WEBP'};
+const IMGM={jpg:'image/jpeg',png:'image/png',gif:'image/gif',webp:'image/webp'};
+const upload=async b=>{
+  let buf;try{buf=Buffer.from(String(b.data||''),'base64')}catch{buf=Buffer.alloc(0)}
+  const k=buf.length&&buf.length<=3.3e6?Object.keys(IMGK).find(k=>IMGK[k](buf)):null;
+  if(!k)return[400,{error:'Image invalide : JPG, PNG, GIF ou WebP, 3 Mo maximum'}];
+  const r=await put('img/'+uid()+'.'+k,buf,{access:'public',contentType:IMGM[k]});
+  return[200,{url:r.url}];
+};
+
+/* ---------- Services (support, service client…) et boîtes mail Resend ---------- */
+const MD=(E.MAIL_DOMAIN||'teamdtk.fr').toLowerCase();
+const PERMS={orders:'Commandes : voir, changer le statut, ajouter le suivi',products:'Articles : ajouter, modifier, supprimer, collaborations',contact:'Boîte mail contact (Zoho)',bulkmail:'Envoyer des mails aux clients (onglet Envoi mail)',shipping:'Modifier les frais de livraison'};
+const LEGACY=['orders','products','contact','bulkmail','shipping'];
+const PERMP={'admin/product':'products','admin/upload':'products','admin/order':'orders','admin/mail-html':'bulkmail','admin/shipping':'shipping'};
+const RESERVED=['www','mail','smtp','imap','pop','api','send','inbound','resend','ftp','admin','shop','autodiscover','didjotheshop','ns1','ns2'];
+const DEFSV=[
+  {id:'support',name:'Support',sub:'support',alias:'support',perms:['orders'],approveMail:true,approveActions:true},
+  {id:'client',name:'Service client',sub:'client',alias:'client',perms:['orders','bulkmail'],approveMail:true,approveActions:true},
+  {id:'logistique',name:'Logistique',sub:'logistique',alias:'logistique',perms:['orders','shipping'],approveMail:true,approveActions:true}
+];
+const mbxName=key=>'mbx-'+String(key).replace(/[^a-z0-9]/gi,'-');
+const mbxRead=async key=>{const d=await rd(mbxName(key),{in:[],out:[]});d.in=d.in||[];d.out=d.out||[];return d};
+const mbxWrite=(key,d)=>wr(mbxName(key),d);
+const mbCheck=(S,svcId,local,users,exceptId)=>{
+  const s=S.find(x=>x.id===svcId);if(!s)return 'Service introuvable';
+  if(!/^[a-z0-9][a-z0-9._-]{1,30}$/.test(local))return 'Adresse invalide : 2 à 31 caractères (lettres minuscules, chiffres, . _ -)';
+  if(local===(s.alias||s.sub))return 'Cette adresse est réservée à la boîte partagée du service';
+  if(users.some(u=>u.id!==exceptId&&u.service===svcId&&String(u.mailbox||'').toLowerCase()===local))return 'Cette adresse est déjà utilisée';
+  return '';
+};
+const fromName=s=>String(s||'').replace(/<[^>]*>/g,'').replace(/["'\r\n]/g,'').trim().slice(0,80);
 
 /* ---------- Zoho Mail (API officielle, OAuth) ---------- */
 const ZDC=E.ZOHO_DC||'eu';
@@ -73,12 +110,13 @@ const hotp=(secret,step)=>{const m=Buffer.alloc(8);m.writeBigUInt64BE(BigInt(ste
 const totpCheck=(secret,code,last=0)=>{if(!/^\d{6}$/.test(code))return 0;const now=Math.floor(Date.now()/3e4);for(let d=-1;d<=1;d++){const st=now+d;if(st>last&&hotp(secret,st)===code)return st}return 0};
 
 /* Actions d'employés qui doivent être validées par l'admin principal */
-const EMP_OK=['admin/data','admin/upload','admin/requests','admin/mail/','admin/product','admin/mail-html','admin/order','admin/shipping'];
+const EMP_OK=['admin/data','admin/upload','admin/requests','admin/mail/','admin/mbx/','admin/product','admin/mail-html','admin/order','admin/shipping'];
 const precheck=(p,b)=>{
   if(p==='admin/product'&&!b.del){if(!String(b.name||'').trim()||!(Number(b.price)>0))return 'Nom et prix requis';const c=collabOf(b.collab);if(c.err)return c.err}
   if(p==='admin/mail-html'&&(!String(b.subject||'').trim()||!text(clean(b.html))))return 'Objet et message requis';
   if(p==='admin/mail/send'&&(!addr(b.to)||!String(b.subject||'').trim()||!text(clean(b.html))))return 'Destinataire, objet et message requis';
   if(p==='admin/mail/delete'&&!(/^\d+$/.test(String(b.folder))&&/^\d+$/.test(String(b.id))))return 'Message invalide';
+  if(p==='admin/mbx/send'&&(!addr(b.to)||!String(b.subject||'').trim()||!text(clean(b.html))))return 'Destinataire, objet et message requis';
   return '';
 };
 const labelOf=(p,b,nm)=>({
@@ -87,21 +125,28 @@ const labelOf=(p,b,nm)=>({
   'admin/mail/send':`Mail (boîte Zoho) à ${addr(b.to)} : ${String(b.subject||'').slice(0,80)}`,
   'admin/mail/delete':'Suppression d\'un mail de la boîte Zoho',
   'admin/order':`Commande ${b.id} → ${b.status}${b.tracking?' (suivi '+String(b.tracking).slice(0,40)+')':''}`,
-  'admin/shipping':`Frais de livraison → ${b.shipping} €`
+  'admin/shipping':`Frais de livraison → ${b.shipping} €`,
+  'admin/mbx/send':`Mail depuis une boîte du service à ${addr(b.to)} : ${String(b.subject||'').slice(0,80)}`
 }[p]||p);
 
-export default async function h(req,res){try{return await main(req,res)}catch(e){console.error(e);return res.status(500).json({error:'Erreur serveur : '+e.message})}}
+export default async function h(req,res){try{return await main(req,res)}catch(e){console.error(e);return res.status(500).json({error:req._st?'Erreur serveur : '+e.message:'Erreur serveur, réessaie plus tard'})}}
 async function main(req,res){
   const path=new URL(req.url,'http://x').pathname.replace(/^\/api\//,'').replace(/\/$/,'');
   const qs=new URL(req.url,'http://x').searchParams;
-  const b=req.body||{},send=(c,o)=>res.status(c).json(o);const origin='https://'+(req.headers['x-forwarded-host']||req.headers.host);
-  const login=u=>res.setHeader('Set-Cookie',`s=${u};HttpOnly;Secure;SameSite=Lax;Path=/;Max-Age=2592000`);
+  const b=req.body||{},send=(c,o)=>res.status(c).json(o);
+  const SITE=(E.SITE_URL||'https://didjotheshop.teamdtk.fr').replace(/\/$/,''),origin=SITE,host=req.headers['x-forwarded-host']||req.headers.host;
+  res.setHeader('Cache-Control','no-store');res.setHeader('X-Content-Type-Options','nosniff');
+  if(req.method!=='GET'&&req.method!=='HEAD'){const o=req.headers.origin;if(o){let same=false;try{same=new URL(o).host===host}catch{}if(!same)return send(403,{error:'Origine refusée'})}}
+  const setCk=(v,age)=>res.setHeader('Set-Cookie',`s=${v};HttpOnly;Secure;SameSite=Lax;Path=/;Max-Age=${age}`);
   const users=await rd('users',[]);
   let user=null;const ck=(req.headers.cookie||'').match(/s=([^;]+)/)?.[1];
-  if(ck){const[p,g]=ck.split('.');if(g&&g===sign(p)){try{const t=JSON.parse(Buffer.from(p,'base64url'));if(t.exp>Date.now())user=users.find(u=>u.id===t.id&&!u.banned)||null}catch{}}}
+  if(ck){const[p,g]=ck.split('.');if(g&&g===sign(p)){try{const t=JSON.parse(Buffer.from(p,'base64url'));if(t.exp>Date.now())user=users.find(u=>u.id===t.id&&!u.banned&&(t.v||0)===(u.sv||0))||null}catch{}}}
   const admin=!!user&&user.email===(E.ADMIN_EMAIL||'').toLowerCase();
-  const emp=!!user&&!admin&&!!user.employee,staff=admin||emp;
-  const start=u=>{const p=Buffer.from(JSON.stringify({id:u.id,exp:Date.now()+2592e6})).toString('base64url');login(p+'.'+sign(p))};
+  const emp=!!user&&!admin&&!!user.employee,staff=admin||emp;req._st=staff;
+  const ip=String(req.headers['x-real-ip']||(req.headers['x-forwarded-for']||'').split(',')[0]||'?').trim();
+  const RLR={login:[15,6e5],register:[5,36e5],verify:[20,6e5],'set-password':[10,6e5],'email/change':[5,36e5],order:[30,6e5]};
+  if(RLR[path]&&limited(path+'|'+ip,RLR[path][0],RLR[path][1]))return send(429,{error:'Trop de requêtes : réessaie dans quelques minutes'});
+  const start=u=>{const age=(u.email===(E.ADMIN_EMAIL||'').toLowerCase()||u.employee)?43200:2592000;const p=Buffer.from(JSON.stringify({id:u.id,exp:Date.now()+age*1000,v:u.sv||0})).toString('base64url');setCk(p+'.'+sign(p),age)};
   const pub=u=>({name:u.name,email:u.email,admin:u.email===(E.ADMIN_EMAIL||'').toLowerCase(),totp:!!u.totp,address:u.address||'',employee:!!u.employee,unsubscribed:!!u.unsubscribed,seller:u.seller?{status:u.seller.status,shop:u.seller.shop}:null});
   const issue=async u=>{
     if(u.code&&u.code.sent>Date.now()-3e4)return send(429,{error:'Attends 30 secondes avant de redemander un code'});
@@ -146,9 +191,9 @@ async function main(req,res){
       let ps=await rd('products',[]);
       if(b.del)ps=ps.filter(p=>p.id!==b.id);
       else{const old=ps.find(x=>x.id===b.id)||{};
-        const imgs=Array.isArray(b.images)?b.images.map(String).filter(Boolean).slice(0,10):(old.images||[]);
+        const imgs=Array.isArray(b.images)?b.images.map(String).filter(okU).slice(0,10):(old.images||[]);
         const c=collabOf(b.collab);if(c.err)return[400,{error:c.err}];
-        const p={...old,id:b.id||uid(),name:String(b.name||'').slice(0,80),desc:String(b.desc||'').slice(0,2000),price:Math.round(Number(b.price)*100)||0,image:imgs[0]||String(b.image||old.image||''),images:imgs,sub:!!b.sub,virtual:b.virtual===undefined?!!old.virtual:!!b.virtual};
+        const p={...old,id:b.id||uid(),name:String(b.name||'').slice(0,80),desc:String(b.desc||'').slice(0,2000),price:Math.round(Number(b.price)*100)||0,image:imgs[0]||(okU(String(b.image||old.image||''))?String(b.image||old.image||''):''),images:imgs,sub:!!b.sub,virtual:b.virtual===undefined?!!old.virtual:!!b.virtual};
         if(!c.skip){if(c.v)p.collab=c.v;else delete p.collab}
         if(!p.name||p.price<=0)return[400,{error:'Nom et prix requis'}];
         const i=ps.findIndex(x=>x.id===p.id);i<0?ps.push(p):ps[i]=p;b.id=p.id}
@@ -183,6 +228,21 @@ async function main(req,res){
       await zoho('POST',`accounts/${a}/messages`,body);
       return[200,{sent:true}];
     },
+    'admin/mbx/send':async(b,ctx)=>{
+      const u=ctx&&ctx.by;if(!u)return[403,{error:'Compte introuvable'}];
+      const bx=await boxOf(u,String(b.box||'me'));if(!bx)return[403,{error:'Boîte mail inaccessible'}];
+      const to=addr(b.to),subject=String(b.subject||'').trim().slice(0,200),html=clean(b.html);
+      if(!to||!subject||!text(html))return[400,{error:'Destinataire, objet et message requis'}];
+      const dat=await mbxRead(bx.key),rid=b.replyTo&&b.replyTo.id?String(b.replyTo.id):'';
+      const orig=rid?dat.in.find(m=>m.id===rid):null,mid=orig&&orig.mid?String(orig.mid).slice(0,200):'';
+      const body='<div style="font-family:Arial,sans-serif;font-size:15px;line-height:1.5;color:#142033">'+html+'</div>';
+      const r=await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:'Bearer '+E.RESEND_API_KEY,'Content-Type':'application/json'},body:JSON.stringify({from:bx.disp.replace(/[<>"\r\n]/g,'')+' <'+bx.address+'>',to:[to],reply_to:bx.address,subject,html:body,...(mid?{headers:{'In-Reply-To':mid,'References':mid}}:{})})});
+      const j=await r.json().catch(()=>({}));
+      if(!r.ok){console.error('Resend mbx',r.status,JSON.stringify(j));return[502,{error:"Resend a refusé l'envoi : "+(j.message||r.status)+" (le sous-domaine du service doit être vérifié dans Resend)"}]}
+      dat.out.unshift({id:String(j.id||'OUT'+uid()),from:bx.address,name:bx.disp,to,subject,html:body.slice(0,50000),text:text(html).slice(0,5000),time:Date.now(),by:u.name});
+      dat.out=dat.out.slice(0,150);await mbxWrite(bx.key,dat);
+      return[200,{sent:true}];
+    },
     'admin/mail/delete':async b=>{
       const f=String(b.folder),id=String(b.id);
       if(!/^\d+$/.test(f)||!/^\d+$/.test(id))return[400,{error:'Message invalide'}];
@@ -191,6 +251,41 @@ async function main(req,res){
     }
   };
 
+  let SVC=null;const svc=async()=>SVC||(SVC=await rd('services',DEFSV));
+  const AEM=(E.ADMIN_EMAIL||'').toLowerCase();
+  const boxOf=async(u,key)=>{
+    const S=await svc(),isA=u.email===AEM;let m;
+    if(key==='me'||key==='user:'+u.id){const s=S.find(x=>x.id===u.service);return u.mailbox&&s?{key:'user:'+u.id,address:u.mailbox+'@'+s.sub+'.'+MD,disp:u.name+' – '+s.name,label:'Ma boîte'}:null}
+    if(m=/^svc:(\w+)$/.exec(key)){const s=S.find(x=>x.id===m[1]);if(!s||(!isA&&u.service!==s.id))return null;return{key:'svc:'+s.id,address:(s.alias||s.sub)+'@'+s.sub+'.'+MD,disp:s.name,label:s.name}}
+    if(m=/^user:(\w+)$/.exec(key)){if(!isA)return null;const t=users.find(x=>x.id===m[1]),s=t&&S.find(x=>x.id===t.service);return t&&t.mailbox&&s?{key:'user:'+t.id,address:t.mailbox+'@'+s.sub+'.'+MD,disp:t.name+' – '+s.name,label:t.name}:null}
+    return null;
+  };
+
+  /* Réception des mails (webhook Resend « email.received ») : on garde le contenu lu directement chez Resend */
+  if(path==='inbound'){
+    if(req.method!=='POST')return send(405,{error:'Méthode refusée'});
+    const k=String(qs.get('k')||''),sec=String(E.INBOUND_SECRET||'');
+    if(sec.length<16||k.length!==sec.length||!crypto.timingSafeEqual(Buffer.from(k),Buffer.from(sec)))return send(401,{error:'Non autorisé'});
+    if(!b||b.type!=='email.received')return send(200,{ignored:true});
+    const id=String(b.data&&b.data.email_id||'');
+    if(!/^[\w-]{10,80}$/.test(id))return send(400,{error:'Identifiant invalide'});
+    const r=await fetch('https://api.resend.com/emails/receiving/'+id+'?html_format=cid',{headers:{Authorization:'Bearer '+E.RESEND_API_KEY}});
+    if(!r.ok){console.error('Resend receiving',r.status,await r.text().catch(()=>''));return send(502,{error:'Lecture du mail impossible'})}
+    const d=await r.json(),S=await svc();
+    const tos=[...new Set([...(d.to||[]),...(d.cc||[]),...(d.received_for||[])].map(x=>addr(x).toLowerCase()).filter(Boolean))];
+    const msg={id,mid:String(d.message_id||'').slice(0,200),from:addr(d.from),name:fromName(d.from),to:tos.join(', ').slice(0,300),subject:String(d.subject||'(sans objet)').slice(0,200),text:String(d.text||'').slice(0,40000),html:String(d.html||'').slice(0,50000),time:Date.parse(d.created_at)||Date.now(),unread:true,att:(d.attachments||[]).filter(a=>a.content_disposition!=='inline').map(a=>String(a.filename||'fichier').slice(0,80)).slice(0,10)};
+    const done=new Set();
+    for(const a of tos){
+      const [local,dom]=a.split('@'),s=S.find(x=>dom===x.sub+'.'+MD);if(!s)continue;
+      const owner=users.find(u=>!u.banned&&u.service===s.id&&u.mailbox&&String(u.mailbox).toLowerCase()===local);
+      const key=owner?'user:'+owner.id:'svc:'+s.id;
+      if(done.has(key))continue;done.add(key);
+      const bx=await mbxRead(key);if(bx.in.some(m=>m.id===id))continue;
+      bx.in.unshift(msg);bx.in=bx.in.slice(0,150);await mbxWrite(key,bx);
+    }
+    return send(200,{ok:true,delivered:done.size});
+  }
+
   const MT=await rd('maintenance',{on:false});
   if(path==='maintenance')return send(200,{on:!!MT.on});
   if(MT.on&&!admin&&!['me','logout','verify'].includes(path)){
@@ -198,12 +293,18 @@ async function main(req,res){
     if(!admLogin)return send(503,{error:'Maintenance en cours : réessaie dans quelques instants',maintenance:true});
   }
 
+  const S0=staff?await svc():[],my=emp?(S0.find(s=>s.id===user.service)||null):null,myP=emp?(my?my.perms:LEGACY):null;
+  const can=p=>admin||(!!myP&&myP.includes(p));
   if(path.startsWith('admin/')){
     if(!staff)return send(403,{error:'Accès refusé'});
     if(emp&&!EMP_OK.some(x=>path===x||(x.endsWith('/')&&path.startsWith(x))))return send(403,{error:"Action réservée à l'administrateur principal"});
+    const need=PERMP[path]||(path.startsWith('admin/mail/')?'contact':'');
+    if(need&&!can(need))return send(403,{error:"Ton service n'a pas accès à cette fonction"});
     const G=GATED[path];
     if(G){
-      if(admin){const[c,o]=await G(b);return send(c,o)}
+      const mailT=path==='admin/mail-html'||path==='admin/mail/send'||path==='admin/mbx/send';
+      const must=emp&&(mailT?(my?my.approveMail!==false:true):(my?my.approveActions!==false:true));
+      if(!must){const[c,o]=await G(b,{by:user});return send(c,o)}
       const er=precheck(path,b);if(er)return send(400,{error:er});
       const pl=b.html!==undefined?{...b,html:clean(b.html)}:b;
       if(JSON.stringify(pl).length>80000)return send(400,{error:'Demande trop volumineuse'});
@@ -216,9 +317,9 @@ async function main(req,res){
     }
   }
 
-  if(path==='products')return send(200,{products:(await rd('products',[])).map(pubP),shipping:(await rd('settings',{shipping:0})).shipping});
+  if(path==='products')return send(200,{products:(await rd('products',[])).map(pubP).sort((a,b)=>!!b.collab-!!a.collab),shipping:(await rd('settings',{shipping:0})).shipping});
   if(path==='me')return send(200,user?pub(user):null);
-  if(path==='logout'){login('');return send(200,{})}
+  if(path==='logout'){setCk('',0);return send(200,{})}
   if(path==='register'){
     const email=String(b.email||'').trim().toLowerCase(),name=String(b.name||'').trim().slice(0,60);
     if(email===(E.ADMIN_EMAIL||'').toLowerCase())return send(403,{error:'Cette adresse est réservée'});
@@ -261,7 +362,7 @@ async function main(req,res){
     const t=String(b.token||''),u=users.find(x=>x.invite&&x.invite.h===sign('i'+t));
     if(!t||!u||u.invite.exp<Date.now())return send(400,{error:"Lien invalide ou expiré : demande un nouveau mail à l'administrateur"});
     if(String(b.password||'').length<8)return send(400,{error:'8 caractères minimum'});
-    u.hash=hash(String(b.password));delete u.invite;u.verified=true;await wr('users',users);return send(200,{});
+    u.hash=hash(String(b.password));u.sv=(u.sv||0)+1;delete u.invite;u.verified=true;await wr('users',users);return send(200,{});
   }
   if(!user)return send(401,{error:'Connecte-toi pour continuer'});
 
@@ -271,6 +372,7 @@ async function main(req,res){
     user.fails=(user.fails||0)+1;if(user.fails>=5){user.lock=Date.now()+9e5;user.fails=0}
     await wr('users',users);return 'Mot de passe incorrect';
   };
+  if(path==='logout-all'){user.sv=(user.sv||0)+1;await wr('users',users);setCk('',0);return send(200,{})}
   if(path==='profile'){
     const name=String(b.name||'').trim().slice(0,60);
     if(!name)return send(400,{error:'Le nom est requis'});
@@ -282,7 +384,7 @@ async function main(req,res){
     if(admin)return send(400,{error:'Le mot de passe admin se change dans les variables Vercel (ADMIN_PASSWORD)'});
     const er=await pwCheck(b.current);if(er)return send(401,{error:er});
     if(String(b.next||'').length<8)return send(400,{error:'Le nouveau mot de passe doit faire 8 caractères minimum'});
-    user.hash=hash(String(b.next));await wr('users',users);return send(200,{});
+    user.hash=hash(String(b.next));user.sv=(user.sv||0)+1;await wr('users',users);start(user);return send(200,{});
   }
   if(path==='email/change'){
     if(admin)return send(400,{error:"L'adresse du compte administrateur ne peut pas être changée"});
@@ -301,9 +403,9 @@ async function main(req,res){
     if(!c||c.exp<Date.now())return send(400,{error:'Code expiré : recommence le changement d\'adresse'});
     if(!crypto.timingSafeEqual(Buffer.from(sign('e'+user.id+c.email+code)),Buffer.from(c.h))){c.tries++;if(c.tries>=5)delete user.emailChange;await wr('users',users);return send(400,{error:'Code incorrect'})}
     if(users.some(u=>u.email===c.email&&u.id!==user.id))return send(409,{error:'Cette adresse est déjà utilisée'});
-    user.email=c.email;delete user.emailChange;await wr('users',users);
+    user.email=c.email;delete user.emailChange;user.sv=(user.sv||0)+1;await wr('users',users);
     if(stripe&&user.stripeId){try{await stripe.customers.update(user.stripeId,{email:user.email})}catch(e){console.error('Stripe email',e.message)}}
-    return send(200,pub(user));
+    start(user);return send(200,pub(user));
   }
 
   if(path==='totp/setup'){
@@ -376,7 +478,11 @@ async function main(req,res){
   }
 
   /* ---------- Panel admin / employés ---------- */
-  if(path==='admin/data')return send(200,{role:admin?'admin':'employee',zoho:!!(E.ZOHO_CLIENT_ID&&E.ZOHO_REFRESH_TOKEN),products:await rd('products',[]),orders:(await rd('orders',[])).reverse().map(o=>({...o,name:users.find(u=>u.id===o.userId)?.name||''})),users:users.map(u=>({id:u.id,name:u.name,email:u.email,banned:u.banned,employee:!!u.employee,plus:!!(u.plus&&u.plus.active),unsubscribed:!!u.unsubscribed,seller:u.seller?{status:u.seller.status,shop:u.seller.shop,type:u.seller.type,siret:admin?u.seller.siret:'',desc:admin?u.seller.desc:''}:null})),shipping:(await rd('settings',{shipping:0})).shipping});
+  if(path==='admin/data'){
+    const S=await svc(),ad=u=>{const sv=S.find(x=>x.id===u.service);return u.mailbox&&sv?u.mailbox+'@'+sv.sub+'.'+MD:''};
+    const ulist=(admin||can('bulkmail'))?users.map(u=>({id:u.id,name:u.name,email:u.email,banned:u.banned,employee:!!u.employee,plus:!!(u.plus&&u.plus.active),unsubscribed:!!u.unsubscribed,service:u.service||'',mailbox:u.mailbox||'',address:admin?ad(u):'',seller:u.seller?{status:u.seller.status,shop:u.seller.shop,type:u.seller.type,siret:admin?u.seller.siret:'',desc:admin?u.seller.desc:''}:null})):[];
+    return send(200,{role:admin?'admin':'employee',zoho:!!(E.ZOHO_CLIENT_ID&&E.ZOHO_REFRESH_TOKEN)&&can('contact'),perms:admin?Object.keys(PERMS):myP,svcName:my?my.name:'',maildomain:MD,services:admin?S:[],permList:admin?PERMS:{},products:can('products')?await rd('products',[]):[],orders:can('orders')?(await rd('orders',[])).reverse().map(o=>({...o,name:users.find(u=>u.id===o.userId)?.name||''})):[],users:ulist,shipping:(await rd('settings',{shipping:0})).shipping});
+  }
 
   if(path==='admin/requests'){
     const rs=(await rd('requests',[])).slice().reverse();
@@ -388,13 +494,59 @@ async function main(req,res){
     if(!r||r.status!=='pending')return send(404,{error:'Demande introuvable ou déjà traitée'});
     const who=users.find(u=>u.id===r.by);
     if(b.approve){
-      try{const[c,o]=await GATED[r.path](r.payload);if(c>=400)throw new Error(o.error||'Erreur')}
+      try{const[c,o]=await GATED[r.path](r.payload,{by:users.find(u=>u.id===r.by)||null});if(c>=400)throw new Error(o.error||'Erreur')}
       catch(e){return send(500,{error:"L'action n'a pas pu être exécutée : "+e.message+' (la demande reste en attente)'})}
       r.status='approved';
     }else{r.status='rejected';r.reason=String(b.reason||'').slice(0,300)}
     r.done=Date.now();await wr('requests',rs);
     if(who)await mail(who.email,r.status==='approved'?'Demande acceptée':'Demande refusée',`<p>${r.status==='approved'?'Ta demande a été <b>acceptée</b> et exécutée':'Ta demande a été <b>refusée</b>'} :</p><p><b>${esc(r.label)}</b></p>${r.reason?`<p>Motif : ${esc(r.reason)}</p>`:''}`);
     return send(200,{});
+  }
+
+  if(path==='admin/service-save'){
+    if(!admin)return send(403,{error:"Action réservée à l'administrateur principal"});
+    const S=await svc(),name=String(b.name||'').trim().slice(0,40),sub=String(b.sub||'').trim().toLowerCase(),alias=String(b.alias||sub).trim().toLowerCase();
+    if(name.length<2)return send(400,{error:'Nom du service requis (2 caractères minimum)'});
+    if(!/^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?$/.test(sub)||RESERVED.includes(sub))return send(400,{error:'Sous-domaine invalide ou réservé (lettres minuscules, chiffres et tirets)'});
+    if(!/^[a-z0-9][a-z0-9._-]{0,30}$/.test(alias))return send(400,{error:'Adresse partagée invalide'});
+    const cur=S.find(x=>x.id===b.id);
+    if(S.some(x=>x.id!==(cur&&cur.id)&&x.sub===sub))return send(409,{error:'Ce sous-domaine est déjà utilisé par un autre service'});
+    if(cur&&users.some(u=>u.service===cur.id&&String(u.mailbox||'').toLowerCase()===alias))return send(400,{error:"Cette adresse partagée est déjà la boîte d'un compte"});
+    const v={id:cur?cur.id:uid(),name,sub,alias,perms:(Array.isArray(b.perms)?b.perms:[]).filter(p=>PERMS[p]),approveMail:b.approveMail!==false,approveActions:b.approveActions!==false};
+    if(cur)S[S.indexOf(cur)]=v;else S.push(v);
+    await wr('services',S);return send(200,{id:v.id});
+  }
+  if(path==='admin/service-delete'){
+    if(!admin)return send(403,{error:"Action réservée à l'administrateur principal"});
+    const S=await svc();
+    if(users.some(u=>u.service===b.id))return send(400,{error:'Des comptes utilisent encore ce service : change leur service avant de le supprimer'});
+    await wr('services',S.filter(x=>x.id!==b.id));return send(200,{});
+  }
+
+  /* Boîtes mail Resend des services et des comptes */
+  if(path==='admin/mbx/boxes'){
+    const S=await svc(),out=[],cnt=async k=>(await mbxRead(k)).in.filter(m=>m.unread&&!m.del).length;
+    const me=await boxOf(user,'me');if(me)out.push({key:'me',label:'Ma boîte',address:me.address,unread:await cnt(me.key)});
+    if(admin){
+      for(const sv of S){const bx=await boxOf(user,'svc:'+sv.id);out.push({key:bx.key,label:'Service '+sv.name+' (partagée)',address:bx.address,unread:await cnt(bx.key)})}
+      for(const u of users.filter(x=>x.mailbox&&x.service&&!x.banned)){const bx=await boxOf(user,'user:'+u.id);if(bx)out.push({key:bx.key,label:u.name+' · '+((S.find(x=>x.id===u.service)||{}).name||''),address:bx.address,unread:0})}
+    }else{
+      const sv=S.find(x=>x.id===user.service);
+      if(sv){const bx=await boxOf(user,'svc:'+sv.id);out.push({key:bx.key,label:'Boîte du service '+sv.name,address:bx.address,unread:await cnt(bx.key)})}
+    }
+    return send(200,out);
+  }
+  if(path==='admin/mbx/list'||path==='admin/mbx/read'||path==='admin/mbx/delete'){
+    const bx=await boxOf(user,String((path==='admin/mbx/delete'?b.box:qs.get('box'))||'me'));
+    if(!bx)return send(403,{error:'Boîte mail inaccessible'});
+    const f=(path==='admin/mbx/delete'?b.f:qs.get('f'))==='out'?'out':'in',d=await mbxRead(bx.key);
+    if(path==='admin/mbx/list')return send(200,{address:bx.address,messages:d[f].filter(m=>!m.del).slice(0,100).map(m=>({id:m.id,from:m.from,name:m.name||'',to:m.to,subject:m.subject,time:m.time,unread:!!m.unread&&f==='in',att:(m.att||[]).length>0,summary:String(m.text||'').replace(/\s+/g,' ').slice(0,100)}))});
+    const id=String(path==='admin/mbx/delete'?b.id:qs.get('id')||''),m=d[f].find(x=>x.id===id&&!x.del);
+    if(!m)return send(404,{error:'Message introuvable'});
+    if(path==='admin/mbx/delete'){m.del=true;await mbxWrite(bx.key,d);return send(200,{})}
+    const own=bx.key==='user:'+user.id||(!!user.service&&bx.key==='svc:'+user.service);
+    if(m.unread&&own){m.unread=false;await mbxWrite(bx.key,d)}
+    return send(200,{html:m.html||'',text:m.text||'',att:m.att||[],mid:m.mid||''});
   }
 
   /* Boîte mail Zoho (lecture) */
@@ -429,16 +581,23 @@ async function main(req,res){
     const email=String(b.email||'').trim().toLowerCase(),name=String(b.name||'').trim().slice(0,60);
     if(!name||!/^\S+@\S+\.\S+$/.test(email))return send(400,{error:'Nom et email valide requis'});
     if(users.some(u=>u.email===email))return send(409,{error:'Un compte existe déjà avec cet email'});
+    const S=await svc(),sv=String(b.service||''),mbx=String(b.mailbox||'').trim().toLowerCase();
+    if(sv&&!S.some(s=>s.id===sv))return send(400,{error:'Service introuvable'});
+    if(mbx){const er=sv?mbCheck(S,sv,mbx,users,''):'Choisis un service pour créer une adresse mail';if(er)return send(400,{error:er})}
     const tok=crypto.randomBytes(32).toString('base64url');
-    users.push({id:uid(),name,email,hash:hash(crypto.randomBytes(24).toString('hex')),banned:false,created:Date.now(),employee:true,verified:true,invite:{h:sign('i'+tok),exp:Date.now()+1728e5}});
+    users.push({id:uid(),name,email,hash:hash(crypto.randomBytes(24).toString('hex')),banned:false,created:Date.now(),employee:true,service:sv,mailbox:mbx,verified:true,invite:{h:sign('i'+tok),exp:Date.now()+1728e5}});
     await wr('users',users);
-    const sent=await mail(email,'Bienvenue dans la Team DTK : choisis ton mot de passe',`<p>Bonjour ${esc(name)}, un compte employé DidjoTheSHOP vient d'être créé pour toi.</p><p><a href="${origin}/set-password.html?t=${tok}">Choisir mon mot de passe</a> (lien valable 48 h)</p>`);
+    const sent=await mail(email,'Bienvenue dans la Team DTK : choisis ton mot de passe',`<p>Bonjour ${esc(name)}, un compte employé DidjoTheSHOP vient d'être créé pour toi.</p>${mbx?`<p>Ton adresse professionnelle : <b>${esc(mbx+'@'+S.find(s=>s.id===sv).sub+'.'+MD)}</b></p>`:''}<p><a href="${origin}/set-password.html?t=${tok}">Choisir mon mot de passe</a> (lien valable 48 h)</p>`);
     return send(200,{name,email,sent});
   }
   if(path==='admin/user-update'){
     const u=users.find(x=>x.id===b.id);
     if(!u)return send(404,{error:'Utilisateur introuvable'});
     if(b.employee!==undefined) u.employee=!!b.employee;
+    const S=await svc();
+    if(b.service!==undefined){const sv=String(b.service||'');if(sv&&!S.some(s=>s.id===sv))return send(400,{error:'Service introuvable'});u.service=sv;if(!sv)u.mailbox=''}
+    if(b.mailbox!==undefined){const mb=String(b.mailbox||'').trim().toLowerCase();if(mb&&!u.service)return send(400,{error:'Choisis d\'abord un service'});u.mailbox=mb}
+    if(u.mailbox){const er=mbCheck(S,u.service,u.mailbox,users,u.id);if(er)return send(400,{error:er})}
     await wr('users',users);
     return send(200,{});
   }
@@ -461,7 +620,7 @@ async function main(req,res){
     }else{u.seller.status='rejected';u.seller.reason=String(b.reason||'').slice(0,300);await wr('users',users);await mail(u.email,'Ta demande vendeur',`<p>Ta demande n'a pas été acceptée.</p><p>${esc(u.seller.reason)}</p>`)}
     return send(200,{});
   }
-  if(path==='admin/upload'){const r=await put('img/'+uid()+'-'+String(b.name||'img').replace(/[^\w.-]/g,'_'),Buffer.from(b.data,'base64'),{access:'public',contentType:b.type||'image/jpeg'});return send(200,{url:r.url})}
+  if(path==='admin/upload'){const[c,o]=await upload(b);return send(c,o)}
   if(path==='admin/ban'){const u=users.find(x=>x.id===b.id);if(u&&u.email!==user.email){u.banned=!!b.banned;await wr('users',users)}return send(200,{})}
   if(path==='admin/order-delete'){const orders=await rd('orders',[]),o=orders.find(x=>x.id===b.id);if(!o||!o.archived)return send(400,{error:'Seules les commandes livrées (archivées) peuvent être supprimées'});await wr('orders',orders.filter(x=>x.id!==b.id));return send(200,{})}
   if(path.startsWith('admin/'))return send(404,{error:'Introuvable'});
@@ -481,14 +640,14 @@ async function main(req,res){
   if(path.startsWith('seller/')&&!(S&&S.status==='approved'))return send(403,{error:"Espace réservé aux vendeurs acceptés"});
   if(path==='seller/onboard'){const l=await stripe.accountLinks.create({account:S.stripeId,refresh_url:origin+'/seller.html',return_url:origin+'/seller.html',type:'account_onboarding'});return send(200,{url:l.url})}
   if(path==='seller/dashboard'){const l=await stripe.accounts.createLoginLink(S.stripeId);return send(200,{url:l.url})}
-  if(path==='seller/upload'){const r=await put('img/'+uid()+'-'+String(b.name||'img').replace(/[^\w.-]/g,'_'),Buffer.from(b.data,'base64'),{access:'public',contentType:b.type||'image/jpeg'});return send(200,{url:r.url})}
+  if(path==='seller/upload'){const[c,o]=await upload(b);return send(c,o)}
   if(path==='seller/products')return send(200,(await rd('products',[])).filter(p=>p.sellerId===user.id));
   if(path==='seller/product'){
     if(!await ready())return send(403,{error:"Termine d'abord la vérification Stripe pour pouvoir vendre"});
     let ps=await rd('products',[]);const old=ps.find(x=>x.id===b.id);
     if(b.id&&(!old||old.sellerId!==user.id))return send(403,{error:'Article introuvable'});
     if(b.del)ps=ps.filter(p=>p.id!==b.id);
-    else{const imgs=(Array.isArray(b.images)?b.images:[]).map(String).filter(Boolean).slice(0,10);
+    else{const imgs=(Array.isArray(b.images)?b.images:[]).map(String).filter(okU).slice(0,10);
       const p={...(old||{}),id:old?old.id:uid(),sellerId:user.id,name:String(b.name||'').slice(0,80),desc:String(b.desc||'').slice(0,2000),price:Math.round(Number(b.price)*100)||0,image:imgs[0]||'',images:imgs,sub:false,virtual:!!b.virtual};
       if(!p.name||p.price<=0)return send(400,{error:'Nom et prix requis'});
       old?ps[ps.indexOf(old)]=p:ps.push(p)}
