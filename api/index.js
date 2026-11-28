@@ -52,7 +52,14 @@ const RESERVED=['www','mail','smtp','imap','pop','api','send','inbound','resend'
 const DEFSV=[
   {id:'support',name:'Support',sub:'support',alias:'support',perms:['orders'],approveMail:true,approveActions:true},
   {id:'client',name:'Service client',sub:'client',alias:'client',perms:['orders','bulkmail'],approveMail:true,approveActions:true},
-  {id:'logistique',name:'Logistique',sub:'logistique',alias:'logistique',perms:['orders','shipping'],approveMail:true,approveActions:true}
+  {id:'logistique',name:'Commandes & logistique',sub:'logistique',alias:'logistique',perms:['orders','shipping'],approveMail:true,approveActions:true},
+  {id:'retours',name:'Retours & remboursements',sub:'retours',alias:'retours',perms:['orders'],approveMail:true,approveActions:true},
+  {id:'vendeurs',name:'Vendeurs (marketplace)',sub:'vendeurs',alias:'vendeurs',perms:[],approveMail:true,approveActions:true},
+  {id:'partenariats',name:'Partenariats & collaborations',sub:'partenariats',alias:'partenariats',perms:['products'],approveMail:true,approveActions:true},
+  {id:'catalogue',name:'Catalogue & articles',sub:'catalogue',alias:'catalogue',perms:['products'],approveMail:true,approveActions:true},
+  {id:'communication',name:'Communication & newsletters',sub:'communication',alias:'communication',perms:['bulkmail'],approveMail:true,approveActions:true},
+  {id:'facturation',name:'Facturation & comptabilité',sub:'facturation',alias:'facturation',perms:['orders'],approveMail:true,approveActions:true},
+  {id:'juridique',name:'Juridique & RGPD',sub:'juridique',alias:'juridique',perms:[],approveMail:true,approveActions:true}
 ];
 const mbxName=key=>'mbx-'+String(key).replace(/[^a-z0-9]/gi,'-');
 const mbxRead=async key=>{const d=await rd(mbxName(key),{in:[],out:[]});d.in=d.in||[];d.out=d.out||[];return d};
